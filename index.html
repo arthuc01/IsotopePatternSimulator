@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Isotope Pattern Simulator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="page-shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">GitHub Pages-ready</p>
+        <h1>Isotope Pattern Simulator</h1>
+        <p class="hero-copy">
+          Enter a molecular formula, calculate the isotopic envelope, and simulate Gaussian peak broadening at adjustable resolving power.
+        </p>
+      </div>
+      <div class="hero-card">
+        <p class="hero-card-label">Example formulas</p>
+        <div class="chip-row">
+          <button class="chip" data-formula="C8H10N4O2">C8H10N4O2</button>
+          <button class="chip" data-formula="C2H5Br">C2H5Br</button>
+          <button class="chip" data-formula="C6H12O6">C6H12O6</button>
+          <button class="chip" data-formula="CuSO4">CuSO4</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="app-grid">
+      <section class="panel controls-panel">
+        <div class="panel-heading">
+          <h2>Inputs</h2>
+          <p>Formula parsing supports nested parentheses such as <code>Fe2(SO4)3</code>.</p>
+        </div>
+
+        <label class="field">
+          <span>Molecular Formula</span>
+          <input id="formula-input" type="text" value="C8H10N4O2" spellcheck="false" autocomplete="off">
+        </label>
+
+        <div class="field-group">
+          <label class="field">
+            <span>Resolving Power</span>
+            <input id="resolution-input" type="range" min="1000" max="200000" step="1000" value="30000">
+            <output id="resolution-output" for="resolution-input">30000</output>
+          </label>
+
+          <label class="field">
+            <span>Profile Sampling</span>
+            <input id="samples-input" type="range" min="8" max="40" step="1" value="18">
+            <output id="samples-output" for="samples-input">18 pts/FWHM</output>
+          </label>
+        </div>
+
+        <div class="field-group">
+          <label class="field checkbox-field">
+            <input id="profile-toggle" type="checkbox" checked>
+            <span>Show Gaussian profile</span>
+          </label>
+
+          <label class="field checkbox-field">
+            <input id="sticks-toggle" type="checkbox" checked>
+            <span>Show centroid sticks</span>
+          </label>
+        </div>
+
+        <div class="button-row">
+          <button id="simulate-button" class="primary-button">Simulate</button>
+          <button id="peaks-download" class="secondary-button">Download Peaks CSV</button>
+          <button id="profile-download" class="secondary-button">Download Profile CSV</button>
+        </div>
+
+        <div id="status-message" class="status-message" role="status" aria-live="polite"></div>
+
+        <div class="summary-grid">
+          <div class="summary-card">
+            <span class="summary-label">Monoisotopic Mass</span>
+            <strong id="monoisotopic-mass">-</strong>
+          </div>
+          <div class="summary-card">
+            <span class="summary-label">Peaks Retained</span>
+            <strong id="peak-count">-</strong>
+          </div>
+          <div class="summary-card">
+            <span class="summary-label">Base Peak</span>
+            <strong id="base-peak">-</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel plot-panel">
+        <div class="panel-heading">
+          <h2>Pattern</h2>
+          <p>Hover, zoom, and export the figure from the Plotly toolbar.</p>
+        </div>
+        <div id="plot" class="plot-area" aria-label="Isotope pattern plot"></div>
+      </section>
+    </main>
+
+    <section class="panel table-panel">
+      <div class="panel-heading">
+        <h2>Peak Table</h2>
+        <p>The table lists the centroid distribution after normalization to a base peak of 100.</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>m/z</th>
+              <th>Relative Intensity</th>
+            </tr>
+          </thead>
+          <tbody id="peak-table-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</body>
+</html>
