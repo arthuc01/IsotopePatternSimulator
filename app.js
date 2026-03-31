@@ -53,6 +53,7 @@ const ISOTOPE_DATA = {
   Pb: [{ mass: 203.973044, abundance: 0.014 }, { mass: 205.9744657, abundance: 0.241 }, { mass: 206.9758973, abundance: 0.221 }, { mass: 207.9766525, abundance: 0.524 }]
 };
 
+const ELECTRON_MASS = 0.000548579909065;
 const MASS_BUCKET = 0.00001;
 const PRUNE_THRESHOLD = 1e-10;
 const MAX_PEAKS = 12000;
@@ -61,11 +62,16 @@ const state = {
   peaks: [],
   profile: [],
   formula: "",
-  composition: {}
+  composition: {},
+  charge: 1,
+  polarity: "cation",
+  view: null
 };
 
 const elements = {
   formulaInput: document.getElementById("formula-input"),
+  chargeInput: document.getElementById("charge-input"),
+  polaritySelect: document.getElementById("polarity-select"),
   resolutionInput: document.getElementById("resolution-input"),
   resolutionOutput: document.getElementById("resolution-output"),
   samplesInput: document.getElementById("samples-input"),
@@ -75,9 +81,13 @@ const elements = {
   simulateButton: document.getElementById("simulate-button"),
   peaksDownload: document.getElementById("peaks-download"),
   profileDownload: document.getElementById("profile-download"),
+  zoomIn: document.getElementById("zoom-in"),
+  zoomOut: document.getElementById("zoom-out"),
+  resetView: document.getElementById("reset-view"),
   statusMessage: document.getElementById("status-message"),
   peakTableBody: document.getElementById("peak-table-body"),
   monoisotopicMass: document.getElementById("monoisotopic-mass"),
+  monoisotopicMz: document.getElementById("monoisotopic-mz"),
   peakCount: document.getElementById("peak-count"),
   basePeak: document.getElementById("base-peak"),
   plot: document.getElementById("plot")
@@ -89,7 +99,7 @@ function setStatus(message, isError = false) {
 }
 
 function parseFormula(formula) {
-  const normalized = formula.replace(/\s+/g, "").replace(/[Â·â€¢]/g, ".");
+  const normalized = formula.replace(/\s+/g, "").replace(/[·•]/g, ".");
   if (!normalized) {
     throw new Error("Enter a molecular formula.");
   }
@@ -100,11 +110,11 @@ function parseFormula(formula) {
     const match = segment.match(/^(\d+)(.*)$/);
     const multiplier = match ? Number(match[1]) : 1;
     const body = match ? match[2] : segment;
-    const { composition, index } = parseGroup(body, 0);
-    if (index !== body.length) {
-      throw new Error(`Unexpected token near "${body.slice(index)}".`);
+    const parsed = parseGroup(body, 0);
+    if (parsed.index !== body.length) {
+      throw new Error(`Unexpected token near "${body.slice(parsed.index)}".`);
     }
-    mergeComposition(total, composition, multiplier);
+    mergeComposition(total, parsed.composition, multiplier);
   }
   return total;
 }
@@ -122,9 +132,9 @@ function parseGroup(text, startIndex) {
         throw new Error("Missing closing parenthesis.");
       }
       index += 1;
-      const { value, nextIndex } = parseNumber(text, index);
-      mergeComposition(composition, nested.composition, value);
-      index = nextIndex;
+      const number = parseNumber(text, index);
+      mergeComposition(composition, nested.composition, number.value);
+      index = number.nextIndex;
       continue;
     }
 
@@ -147,9 +157,9 @@ function parseGroup(text, startIndex) {
       throw new Error(`Element "${symbol}" is not in the built-in isotope table.`);
     }
 
-    const { value, nextIndex } = parseNumber(text, index);
-    composition[symbol] = (composition[symbol] || 0) + value;
-    index = nextIndex;
+    const number = parseNumber(text, index);
+    composition[symbol] = (composition[symbol] || 0) + number.value;
+    index = number.nextIndex;
   }
 
   return { composition, index };
@@ -162,10 +172,7 @@ function parseNumber(text, startIndex) {
     digits += text[index];
     index += 1;
   }
-  return {
-    value: digits ? Number(digits) : 1,
-    nextIndex: index
-  };
+  return { value: digits ? Number(digits) : 1, nextIndex: index };
 }
 
 function mergeComposition(target, source, multiplier = 1) {
@@ -195,30 +202,22 @@ function convolveDistributions(a, b) {
     }
   }
 
-  let peaks = Array.from(buckets.values());
-  peaks = pruneDistribution(peaks);
-  return peaks;
+  return pruneDistribution(Array.from(buckets.values()));
 }
 
 function pruneDistribution(peaks) {
-  if (peaks.length === 0) {
+  if (!peaks.length) {
     return peaks;
   }
 
-  let maxIntensity = 0;
-  for (const peak of peaks) {
-    if (peak.intensity > maxIntensity) {
-      maxIntensity = peak.intensity;
-    }
+  const maxIntensity = peaks.reduce((max, peak) => Math.max(max, peak.intensity), 0);
+  let pruned = peaks.filter((peak) => peak.intensity >= maxIntensity * PRUNE_THRESHOLD);
+  pruned.sort((left, right) => right.intensity - left.intensity);
+  if (pruned.length > MAX_PEAKS) {
+    pruned = pruned.slice(0, MAX_PEAKS);
   }
-
-  peaks = peaks.filter((peak) => peak.intensity >= maxIntensity * PRUNE_THRESHOLD);
-  peaks.sort((left, right) => right.intensity - left.intensity);
-  if (peaks.length > MAX_PEAKS) {
-    peaks = peaks.slice(0, MAX_PEAKS);
-  }
-  peaks.sort((left, right) => left.mass - right.mass);
-  return peaks;
+  pruned.sort((left, right) => left.mass - right.mass);
+  return pruned;
 }
 
 function buildDistribution(formulaComposition) {
@@ -229,20 +228,27 @@ function buildDistribution(formulaComposition) {
     }
   }
 
-  const maxIntensity = Math.max(...distribution.map((peak) => peak.intensity));
+  const maxIntensity = distribution.reduce((max, peak) => Math.max(max, peak.intensity), 0);
   return distribution.map((peak) => ({
     mass: peak.mass,
-    intensity: (peak.intensity / maxIntensity) * 100
+    intensity: maxIntensity ? (peak.intensity / maxIntensity) * 100 : 0
   }));
 }
 
 function monoisotopicMass(composition) {
   return Object.entries(composition).reduce((total, [symbol, count]) => {
-    const isotope = ISOTOPE_DATA[symbol].reduce((best, current) => (
-      current.abundance > best.abundance ? current : best
-    ));
+    const isotope = ISOTOPE_DATA[symbol].reduce((best, current) => current.abundance > best.abundance ? current : best);
     return total + isotope.mass * count;
   }, 0);
+}
+
+function applyChargeToMass(mass, charge, polarity) {
+  const sign = polarity === "anion" ? 1 : -1;
+  return (mass + (sign * charge * ELECTRON_MASS)) / charge;
+}
+
+function applyChargeToDistribution(peaks, charge, polarity) {
+  return peaks.map((peak) => ({ mass: applyChargeToMass(peak.mass, charge, polarity), intensity: peak.intensity }));
 }
 
 function simulateGaussianProfile(peaks, resolvingPower, pointsPerFwhm) {
@@ -250,9 +256,7 @@ function simulateGaussianProfile(peaks, resolvingPower, pointsPerFwhm) {
     return [];
   }
 
-  const basePeak = peaks.reduce((best, current) => (
-    current.intensity > best.intensity ? current : best
-  ));
+  const basePeak = peaks.reduce((best, current) => current.intensity > best.intensity ? current : best);
   const representativeFwhm = Math.max(basePeak.mass / resolvingPower, 0.0005);
   const step = representativeFwhm / pointsPerFwhm;
   const minX = peaks[0].mass - representativeFwhm * 5;
@@ -270,95 +274,199 @@ function simulateGaussianProfile(peaks, resolvingPower, pointsPerFwhm) {
     profile.push({ mass: x, intensity: y });
   }
 
-  const profileMax = Math.max(...profile.map((point) => point.intensity), 1);
+  const profileMax = profile.reduce((max, point) => Math.max(max, point.intensity), 0);
   return profile.map((point) => ({
     mass: point.mass,
-    intensity: (point.intensity / profileMax) * 100
+    intensity: profileMax ? (point.intensity / profileMax) * 100 : 0
   }));
 }
 
+function defaultViewRange() {
+  const source = state.profile.length ? state.profile : state.peaks;
+  if (!source.length) {
+    return { minX: 0, maxX: 1 };
+  }
+  const span = Math.max(source[source.length - 1].mass - source[0].mass, 0.02);
+  const padding = span * 0.03;
+  return { minX: source[0].mass - padding, maxX: source[source.length - 1].mass + padding };
+}
+
+function clampView(view) {
+  const full = defaultViewRange();
+  const minSpan = Math.max((full.maxX - full.minX) / 500, 0.0005);
+  let minX = view.minX;
+  let maxX = view.maxX;
+  if ((maxX - minX) < minSpan) {
+    const center = (minX + maxX) / 2;
+    minX = center - minSpan / 2;
+    maxX = center + minSpan / 2;
+  }
+  if (minX < full.minX) {
+    maxX += full.minX - minX;
+    minX = full.minX;
+  }
+  if (maxX > full.maxX) {
+    minX -= maxX - full.maxX;
+    maxX = full.maxX;
+  }
+  return { minX: Math.max(minX, full.minX), maxX: Math.min(maxX, full.maxX) };
+}
+
+function getVisibleData() {
+  if (!state.view) {
+    state.view = defaultViewRange();
+  }
+  return {
+    peaks: state.peaks.filter((peak) => peak.mass >= state.view.minX && peak.mass <= state.view.maxX),
+    profile: state.profile.filter((point) => point.mass >= state.view.minX && point.mass <= state.view.maxX)
+  };
+}
+
+function nearestDatum(mass) {
+  const candidates = [];
+  if (elements.profileToggle.checked) {
+    candidates.push(...state.profile);
+  }
+  if (elements.sticksToggle.checked) {
+    candidates.push(...state.peaks);
+  }
+  if (!candidates.length) {
+    return null;
+  }
+
+  let best = candidates[0];
+  let bestDistance = Math.abs(best.mass - mass);
+  for (const point of candidates) {
+    const distance = Math.abs(point.mass - mass);
+    if (distance < bestDistance) {
+      best = point;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
 function renderPlot() {
-  if (typeof Plotly === "undefined") {
-    elements.plot.innerHTML = "<p>Plotly failed to load.</p>";
+  if (!state.peaks.length) {
+    elements.plot.innerHTML = '<div class="plot-empty">No spectrum to display.</div>';
     return;
   }
 
-  const traces = [];
-  if (elements.sticksToggle.checked && state.peaks.length) {
-    traces.push({
-      x: state.peaks.flatMap((peak) => [peak.mass, peak.mass, null]),
-      y: state.peaks.flatMap((peak) => [0, peak.intensity, null]),
-      type: "scatter",
-      mode: "lines",
-      name: "Centroid",
-      line: { color: "#d9730d", width: 2 },
-      hovertemplate: "m/z %{x:.5f}<br>Intensity %{y:.2f}<extra></extra>"
-    });
+  state.view = clampView(state.view || defaultViewRange());
+  const visible = getVisibleData();
+  const width = Math.max(elements.plot.clientWidth || 320, 320);
+  const height = 540;
+  const margin = { top: 20, right: 24, bottom: 44, left: 68 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const minX = state.view.minX;
+  const maxX = state.view.maxX;
+  const xToPx = (x) => margin.left + ((x - minX) / (maxX - minX)) * plotWidth;
+  const yToPx = (y) => margin.top + plotHeight - (y / 100) * plotHeight;
+
+  const sticksMarkup = elements.sticksToggle.checked
+    ? visible.peaks.map((peak) => `<line x1="${xToPx(peak.mass).toFixed(2)}" y1="${yToPx(0).toFixed(2)}" x2="${xToPx(peak.mass).toFixed(2)}" y2="${yToPx(peak.intensity).toFixed(2)}" stroke="#d9730d" stroke-width="1.8" />`).join("")
+    : "";
+
+  let profileMarkup = "";
+  if (elements.profileToggle.checked && visible.profile.length) {
+    const points = visible.profile.map((point) => `${xToPx(point.mass).toFixed(2)},${yToPx(point.intensity).toFixed(2)}`).join(" ");
+    const filled = `${margin.left},${yToPx(0).toFixed(2)} ${points} ${margin.left + plotWidth},${yToPx(0).toFixed(2)}`;
+    profileMarkup = `<polygon points="${filled}" fill="rgba(13, 108, 116, 0.16)"></polygon><polyline points="${points}" fill="none" stroke="#0d6c74" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"></polyline>`;
   }
 
-  if (elements.profileToggle.checked && state.profile.length) {
-    traces.push({
-      x: state.profile.map((point) => point.mass),
-      y: state.profile.map((point) => point.intensity),
-      type: "scatter",
-      mode: "lines",
-      name: "Gaussian profile",
-      line: { color: "#0d6c74", width: 3, shape: "spline" },
-      fill: "tozeroy",
-      fillcolor: "rgba(13, 108, 116, 0.18)",
-      hovertemplate: "m/z %{x:.5f}<br>Intensity %{y:.2f}<extra></extra>"
-    });
-  }
+  const xTickMarkup = Array.from({ length: 7 }, (_, index) => {
+    const value = minX + ((maxX - minX) * index / 6);
+    const x = margin.left + (plotWidth * index / 6);
+    return `<line x1="${x}" y1="${margin.top}" x2="${x}" y2="${margin.top + plotHeight}" stroke="rgba(24,36,45,0.08)" /><text x="${x}" y="${height - 14}" text-anchor="middle" font-size="11" fill="#56646f">${value.toFixed(4)}</text>`;
+  }).join("");
 
-  const layout = {
-    paper_bgcolor: "rgba(0,0,0,0)",
-    plot_bgcolor: "rgba(255,255,255,0.75)",
-    margin: { l: 60, r: 20, t: 20, b: 60 },
-    legend: { orientation: "h", y: 1.1, x: 0 },
-    xaxis: {
-      title: "m/z",
-      gridcolor: "rgba(24, 36, 45, 0.08)",
-      zeroline: false
-    },
-    yaxis: {
-      title: "Relative intensity",
-      range: [0, 105],
-      gridcolor: "rgba(24, 36, 45, 0.08)",
-      zeroline: false
-    }
+  const yTickMarkup = [0, 25, 50, 75, 100].map((value) => {
+    const y = yToPx(value);
+    return `<line x1="${margin.left}" y1="${y}" x2="${margin.left + plotWidth}" y2="${y}" stroke="rgba(24,36,45,0.08)" /><text x="${margin.left - 10}" y="${y + 4}" text-anchor="end" font-size="11" fill="#56646f">${value}</text>`;
+  }).join("");
+
+  elements.plot.innerHTML = `<svg class="plot-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none"><rect x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" fill="rgba(255,255,255,0.72)" rx="14"></rect>${xTickMarkup}${yTickMarkup}<line x1="${margin.left}" y1="${margin.top + plotHeight}" x2="${margin.left + plotWidth}" y2="${margin.top + plotHeight}" stroke="#23343f" /><line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + plotHeight}" stroke="#23343f" />${profileMarkup}${sticksMarkup}<line id="hover-line" x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + plotHeight}" stroke="#0a4c57" stroke-dasharray="4 4" opacity="0"></line><text x="${margin.left + plotWidth / 2}" y="${height - 2}" text-anchor="middle" font-size="12" fill="#18242d">m/z</text><text x="18" y="${margin.top + plotHeight / 2}" text-anchor="middle" font-size="12" fill="#18242d" transform="rotate(-90 18 ${margin.top + plotHeight / 2})">Relative intensity</text></svg><div id="plot-tooltip" class="plot-tooltip"></div>`;
+
+  const svg = elements.plot.querySelector(".plot-svg");
+  const tooltip = elements.plot.querySelector("#plot-tooltip");
+  const hoverLine = elements.plot.querySelector("#hover-line");
+
+  const massFromClientX = (clientX) => {
+    const rect = elements.plot.getBoundingClientRect();
+    const x = Math.min(Math.max(clientX - rect.left, margin.left), rect.width - margin.right);
+    const fraction = (x - margin.left) / plotWidth;
+    return minX + fraction * (maxX - minX);
   };
 
-  Plotly.react(elements.plot, traces, layout, {
-    responsive: true,
-    displaylogo: false,
-    toImageButtonOptions: {
-      format: "png",
-      filename: `${sanitizeFilename(state.formula || "isotope-pattern")}-plot`,
-      scale: 2
+  const showTooltip = (event) => {
+    const datum = nearestDatum(massFromClientX(event.clientX));
+    if (!datum) {
+      return;
     }
+    const x = xToPx(datum.mass);
+    hoverLine.setAttribute("x1", x);
+    hoverLine.setAttribute("x2", x);
+    hoverLine.setAttribute("opacity", "1");
+    tooltip.innerHTML = `m/z ${datum.mass.toFixed(5)}<br>int ${datum.intensity.toFixed(3)}`;
+    tooltip.style.left = `${event.offsetX}px`;
+    tooltip.style.top = `${event.offsetY}px`;
+    tooltip.style.opacity = "1";
+  };
+
+  svg.addEventListener("mousemove", showTooltip);
+  svg.addEventListener("mouseleave", () => {
+    hoverLine.setAttribute("opacity", "0");
+    tooltip.style.opacity = "0";
   });
+
+  svg.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    const center = massFromClientX(event.clientX);
+    const span = state.view.maxX - state.view.minX;
+    const nextSpan = span * (event.deltaY > 0 ? 1.2 : 0.82);
+    const ratio = (center - state.view.minX) / span;
+    state.view = clampView({ minX: center - nextSpan * ratio, maxX: center + nextSpan * (1 - ratio) });
+    renderPlot();
+  }, { passive: false });
+
+  let dragStartX = 0;
+  let dragStartView = null;
+  svg.addEventListener("pointerdown", (event) => {
+    dragStartX = event.clientX;
+    dragStartView = { ...state.view };
+    svg.setPointerCapture(event.pointerId);
+  });
+
+  svg.addEventListener("pointermove", (event) => {
+    if (!dragStartView) {
+      return;
+    }
+    const rect = elements.plot.getBoundingClientRect();
+    const span = dragStartView.maxX - dragStartView.minX;
+    const deltaMass = ((event.clientX - dragStartX) / rect.width) * span;
+    state.view = clampView({ minX: dragStartView.minX - deltaMass, maxX: dragStartView.maxX - deltaMass });
+    renderPlot();
+  });
+
+  const stopDrag = () => {
+    dragStartView = null;
+  };
+  svg.addEventListener("pointerup", stopDrag);
+  svg.addEventListener("pointercancel", stopDrag);
 }
 
 function renderTable() {
-  const rows = state.peaks
-    .slice(0, 250)
-    .map((peak, index) => `
-      <tr>
-        <td>${index + 1}</td>
-        <td>${peak.mass.toFixed(5)}</td>
-        <td>${peak.intensity.toFixed(3)}</td>
-      </tr>
-    `)
-    .join("");
+  const rows = state.peaks.slice(0, 250).map((peak, index) => `\n      <tr>\n        <td>${index + 1}</td>\n        <td>${peak.mass.toFixed(5)}</td>\n        <td>${peak.intensity.toFixed(3)}</td>\n      </tr>\n    `).join("");
   elements.peakTableBody.innerHTML = rows || '<tr><td colspan="3">No peaks available.</td></tr>';
 }
 
-function updateSummary(composition) {
-  const mono = monoisotopicMass(composition);
-  const basePeak = state.peaks.reduce((best, current) => (
-    current.intensity > best.intensity ? current : best
-  ), { mass: 0, intensity: 0 });
-  elements.monoisotopicMass.textContent = mono.toFixed(5);
+function updateSummary(composition, charge, polarity) {
+  const monoMass = monoisotopicMass(composition);
+  const monoMz = applyChargeToMass(monoMass, charge, polarity);
+  const basePeak = state.peaks.reduce((best, current) => current.intensity > best.intensity ? current : best, { mass: 0, intensity: 0 });
+  elements.monoisotopicMass.textContent = monoMass.toFixed(5);
+  elements.monoisotopicMz.textContent = monoMz.toFixed(5);
   elements.peakCount.textContent = String(state.peaks.length);
   elements.basePeak.textContent = `${basePeak.mass.toFixed(5)} / ${basePeak.intensity.toFixed(2)}`;
 }
@@ -368,7 +476,9 @@ function downloadCsv(rows, filename) {
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
   link.download = filename;
+  document.body.appendChild(link);
   link.click();
+  document.body.removeChild(link);
   URL.revokeObjectURL(link.href);
 }
 
@@ -386,6 +496,7 @@ function exportPeaksCsv() {
     lines.push(`${peak.mass.toFixed(8)},${peak.intensity.toFixed(6)}`);
   }
   downloadCsv(lines.join("\n"), `${sanitizeFilename(state.formula)}-peaks.csv`);
+  setStatus(`Downloaded centroid peaks for ${state.formula}.`);
 }
 
 function exportProfileCsv() {
@@ -398,45 +509,54 @@ function exportProfileCsv() {
     lines.push(`${point.mass.toFixed(8)},${point.intensity.toFixed(6)}`);
   }
   downloadCsv(lines.join("\n"), `${sanitizeFilename(state.formula)}-profile.csv`);
+  setStatus(`Downloaded Gaussian profile for ${state.formula}.`);
 }
 
-function simulate() {
+function simulate(resetView = true) {
   try {
-    if (typeof Plotly === "undefined") {
-      throw new Error("Plotly did not load. Check your internet connection or bundle the library locally.");
-    }
-
     const formula = elements.formulaInput.value.trim();
     const composition = parseFormula(formula);
-    const peaks = buildDistribution(composition);
+    const charge = Math.max(1, Number(elements.chargeInput.value) || 1);
+    const polarity = elements.polaritySelect.value;
+    const neutralPeaks = buildDistribution(composition);
+    const peaks = applyChargeToDistribution(neutralPeaks, charge, polarity);
     const resolution = Number(elements.resolutionInput.value);
     const samplesPerFwhm = Number(elements.samplesInput.value);
 
     state.formula = formula;
     state.composition = composition;
+    state.charge = charge;
+    state.polarity = polarity;
     state.peaks = peaks;
-    state.profile = elements.profileToggle.checked
-      ? simulateGaussianProfile(peaks, resolution, samplesPerFwhm)
-      : [];
+    state.profile = elements.profileToggle.checked ? simulateGaussianProfile(peaks, resolution, samplesPerFwhm) : [];
+    state.view = resetView || !state.view ? defaultViewRange() : clampView(state.view);
 
     renderPlot();
     renderTable();
-    updateSummary(composition);
-    setStatus(`Simulated ${formula} with ${Object.keys(composition).length} element type(s).`);
+    updateSummary(composition, charge, polarity);
+    setStatus(`Simulated ${formula} as ${charge}${polarity === "cation" ? "+" : "-"} ion(s).`);
   } catch (error) {
     state.peaks = [];
     state.profile = [];
-    if (typeof Plotly !== "undefined") {
-      renderPlot();
-    } else {
-      elements.plot.innerHTML = "<p>Plotly failed to load.</p>";
-    }
+    state.view = null;
+    renderPlot();
     renderTable();
     elements.monoisotopicMass.textContent = "-";
+    elements.monoisotopicMz.textContent = "-";
     elements.peakCount.textContent = "-";
     elements.basePeak.textContent = "-";
     setStatus(error.message, true);
   }
+}
+
+function zoomPlot(factor) {
+  if (!state.peaks.length) {
+    return;
+  }
+  const center = (state.view.minX + state.view.maxX) / 2;
+  const span = (state.view.maxX - state.view.minX) * factor;
+  state.view = clampView({ minX: center - span / 2, maxX: center + span / 2 });
+  renderPlot();
 }
 
 function bindEvents() {
@@ -448,23 +568,32 @@ function bindEvents() {
     elements.samplesOutput.value = `${elements.samplesInput.value} pts/FWHM`;
   });
 
-  elements.simulateButton.addEventListener("click", simulate);
+  elements.simulateButton.addEventListener("click", () => simulate(true));
   elements.peaksDownload.addEventListener("click", exportPeaksCsv);
   elements.profileDownload.addEventListener("click", exportProfileCsv);
-  elements.profileToggle.addEventListener("change", simulate);
+  elements.profileToggle.addEventListener("change", () => simulate(true));
   elements.sticksToggle.addEventListener("change", renderPlot);
-  elements.resolutionInput.addEventListener("change", simulate);
-  elements.samplesInput.addEventListener("change", simulate);
+  elements.resolutionInput.addEventListener("change", () => simulate(true));
+  elements.samplesInput.addEventListener("change", () => simulate(true));
+  elements.chargeInput.addEventListener("change", () => simulate(true));
+  elements.polaritySelect.addEventListener("change", () => simulate(true));
+  elements.zoomIn.addEventListener("click", () => zoomPlot(0.7));
+  elements.zoomOut.addEventListener("click", () => zoomPlot(1.4));
+  elements.resetView.addEventListener("click", () => {
+    state.view = defaultViewRange();
+    renderPlot();
+  });
+
   elements.formulaInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
-      simulate();
+      simulate(true);
     }
   });
 
   document.querySelectorAll("[data-formula]").forEach((button) => {
     button.addEventListener("click", () => {
       elements.formulaInput.value = button.dataset.formula;
-      simulate();
+      simulate(true);
     });
   });
 }
@@ -472,4 +601,5 @@ function bindEvents() {
 bindEvents();
 elements.resolutionOutput.value = elements.resolutionInput.value;
 elements.samplesOutput.value = `${elements.samplesInput.value} pts/FWHM`;
-simulate();
+renderPlot();
+simulate(true);

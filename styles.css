@@ -68,10 +68,10 @@ p {
 }
 
 h1 {
-  font-size: clamp(2.3rem, 4.8vw, 4.5rem);
-  line-height: 0.95;
+  font-size: clamp(1.8rem, 3.4vw, 3.1rem);
+  line-height: 1.02;
   letter-spacing: -0.05em;
-  max-width: 10ch;
+  white-space: nowrap;
 }
 
 .hero-copy,
@@ -205,6 +205,17 @@ input[type="text"] {
   background: rgba(255, 255, 255, 0.72);
 }
 
+input[type="number"],
+select {
+  width: 100%;
+  border: 1px solid rgba(24, 36, 45, 0.12);
+  border-radius: 14px;
+  padding: 14px 16px;
+  font: 500 1rem "IBM Plex Mono", monospace;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.72);
+}
+
 input[type="range"] {
   width: 100%;
   accent-color: var(--accent);
@@ -251,7 +262,7 @@ output {
 
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .summary-card {
@@ -275,6 +286,50 @@ output {
 .plot-area {
   width: 100%;
   min-height: 540px;
+  position: relative;
+  overflow: hidden;
+  border-radius: 18px;
+  border: 1px solid rgba(24, 36, 45, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(239, 247, 248, 0.9));
+}
+
+.plot-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.plot-svg {
+  display: block;
+  width: 100%;
+  height: 540px;
+}
+
+.plot-empty {
+  display: grid;
+  place-items: center;
+  height: 540px;
+  color: var(--muted);
+}
+
+.plot-tooltip {
+  position: absolute;
+  pointer-events: none;
+  transform: translate(12px, -12px);
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(24, 36, 45, 0.92);
+  color: #f4f8f8;
+  font: 500 0.82rem "IBM Plex Mono", monospace;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.charge-group {
+  align-items: end;
 }
 
 .table-wrap {
@@ -314,7 +369,7 @@ code {
   }
 
   .summary-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -329,7 +384,21 @@ code {
     padding: 18px;
   }
 
+  h1 {
+    font-size: 1.75rem;
+    white-space: normal;
+  }
+
   .plot-area {
     min-height: 420px;
+  }
+
+  .plot-svg,
+  .plot-empty {
+    height: 420px;
+  }
+
+  .summary-grid {
+    grid-template-columns: 1fr;
   }
 }

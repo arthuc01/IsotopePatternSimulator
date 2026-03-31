@@ -8,7 +8,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
-  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
@@ -44,6 +43,21 @@
           <input id="formula-input" type="text" value="C8H10N4O2" spellcheck="false" autocomplete="off">
         </label>
 
+        <div class="field-group charge-group">
+          <label class="field">
+            <span>Charge</span>
+            <input id="charge-input" type="number" min="1" max="10" step="1" value="1">
+          </label>
+
+          <label class="field">
+            <span>Ion Type</span>
+            <select id="polarity-select">
+              <option value="cation" selected>Cation</option>
+              <option value="anion">Anion</option>
+            </select>
+          </label>
+        </div>
+
         <div class="field-group">
           <label class="field">
             <span>Resolving Power</span>
@@ -71,9 +85,9 @@
         </div>
 
         <div class="button-row">
-          <button id="simulate-button" class="primary-button">Simulate</button>
-          <button id="peaks-download" class="secondary-button">Download Peaks CSV</button>
-          <button id="profile-download" class="secondary-button">Download Profile CSV</button>
+          <button id="simulate-button" class="primary-button" type="button">Simulate</button>
+          <button id="peaks-download" class="secondary-button" type="button">Download Peaks CSV</button>
+          <button id="profile-download" class="secondary-button" type="button">Download Profile CSV</button>
         </div>
 
         <div id="status-message" class="status-message" role="status" aria-live="polite"></div>
@@ -82,6 +96,10 @@
           <div class="summary-card">
             <span class="summary-label">Monoisotopic Mass</span>
             <strong id="monoisotopic-mass">-</strong>
+          </div>
+          <div class="summary-card">
+            <span class="summary-label">Monoisotopic m/z</span>
+            <strong id="monoisotopic-mz">-</strong>
           </div>
           <div class="summary-card">
             <span class="summary-label">Peaks Retained</span>
@@ -97,7 +115,12 @@
       <section class="panel plot-panel">
         <div class="panel-heading">
           <h2>Pattern</h2>
-          <p>Hover, zoom, and export the figure from the Plotly toolbar.</p>
+          <p>Hover for values, use the zoom buttons or mouse wheel, and drag to pan.</p>
+        </div>
+        <div class="plot-toolbar">
+          <button id="zoom-in" class="secondary-button" type="button">Zoom In</button>
+          <button id="zoom-out" class="secondary-button" type="button">Zoom Out</button>
+          <button id="reset-view" class="secondary-button" type="button">Reset View</button>
         </div>
         <div id="plot" class="plot-area" aria-label="Isotope pattern plot"></div>
       </section>
