@@ -99,7 +99,7 @@ function setStatus(message, isError = false) {
 }
 
 function parseFormula(formula) {
-  const normalized = formula.replace(/\s+/g, "").replace(/[·•]/g, ".");
+  const normalized = formula.replace(/\s+/g, "").replace(/[Â·â€¢]/g, ".");
   if (!normalized) {
     throw new Error("Enter a molecular formula.");
   }
@@ -185,7 +185,8 @@ function convolveDistributions(a, b) {
   const buckets = new Map();
   for (const peakA of a) {
     for (const peakB of b) {
-      const intensity = peakA.intensity * peakB.intensity;
+      const rightIntensity = peakB.intensity ?? peakB.abundance;
+      const intensity = peakA.intensity * rightIntensity;
       if (intensity < PRUNE_THRESHOLD) {
         continue;
       }
@@ -229,6 +230,9 @@ function buildDistribution(formulaComposition) {
   }
 
   const maxIntensity = distribution.reduce((max, peak) => Math.max(max, peak.intensity), 0);
+  if (!distribution.length || !Number.isFinite(maxIntensity) || maxIntensity <= 0) {
+    throw new Error("Isotope distribution could not be generated for this formula.");
+  }
   return distribution.map((peak) => ({
     mass: peak.mass,
     intensity: maxIntensity ? (peak.intensity / maxIntensity) * 100 : 0
