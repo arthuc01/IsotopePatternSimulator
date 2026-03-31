@@ -267,7 +267,8 @@ output {
 
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
 }
 
 .summary-card {
@@ -275,17 +276,23 @@ output {
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.56);
   border: 1px solid rgba(24, 36, 45, 0.08);
+  min-width: 0;
 }
 
 .summary-label {
   display: block;
   margin-bottom: 8px;
   font-size: 0.85rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .summary-card strong {
   font-family: "IBM Plex Mono", monospace;
   font-size: 1rem;
+  display: block;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .plot-area {
@@ -390,7 +397,7 @@ code {
   }
 
   .summary-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(140px, 1fr));
   }
 }
 
