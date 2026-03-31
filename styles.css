@@ -40,7 +40,7 @@ body::before {
 }
 
 .page-shell {
-  width: min(1240px, calc(100% - 32px));
+  width: min(1240px, calc(100% - 64px));
   margin: 0 auto;
   padding: 32px 0 48px;
 }
@@ -191,6 +191,11 @@ td {
   margin-bottom: 16px;
 }
 
+.compact-field {
+  max-width: 180px;
+  margin-bottom: 0;
+}
+
 .field span {
   font-size: 0.92rem;
 }
@@ -328,8 +333,24 @@ output {
   transition: opacity 120ms ease;
 }
 
+.zoom-box {
+  position: absolute;
+  top: 0;
+  height: 0;
+  border: 1px solid rgba(13, 108, 116, 0.65);
+  background: rgba(13, 108, 116, 0.14);
+  opacity: 0;
+  pointer-events: none;
+}
+
 .charge-group {
   align-items: end;
+}
+
+.table-controls {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 14px;
 }
 
 .table-wrap {
@@ -375,7 +396,7 @@ code {
 
 @media (max-width: 640px) {
   .page-shell {
-    width: min(100% - 20px, 100%);
+    width: min(100% - 24px, 100%);
     padding-top: 20px;
   }
 
@@ -400,5 +421,14 @@ code {
 
   .summary-grid {
     grid-template-columns: 1fr;
+  }
+
+  .table-controls {
+    justify-content: stretch;
+  }
+
+  .compact-field {
+    max-width: none;
+    width: 100%;
   }
 }

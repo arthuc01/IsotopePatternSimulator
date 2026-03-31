@@ -65,7 +65,8 @@ const state = {
   composition: {},
   charge: 1,
   polarity: "cation",
-  view: null
+  view: null,
+  selection: null
 };
 
 const elements = {
@@ -81,6 +82,7 @@ const elements = {
   simulateButton: document.getElementById("simulate-button"),
   peaksDownload: document.getElementById("peaks-download"),
   profileDownload: document.getElementById("profile-download"),
+  peakFilterInput: document.getElementById("peak-filter-input"),
   zoomIn: document.getElementById("zoom-in"),
   zoomOut: document.getElementById("zoom-out"),
   resetView: document.getElementById("reset-view"),
@@ -285,14 +287,25 @@ function simulateGaussianProfile(peaks, resolvingPower, pointsPerFwhm) {
   }));
 }
 
+function averageMassCenter(source) {
+  const total = source.reduce((sum, point) => sum + point.intensity, 0);
+  if (!total) {
+    return (source[0].mass + source[source.length - 1].mass) / 2;
+  }
+  return source.reduce((sum, point) => sum + (point.mass * point.intensity), 0) / total;
+}
+
 function defaultViewRange() {
   const source = state.profile.length ? state.profile : state.peaks;
   if (!source.length) {
     return { minX: 0, maxX: 1 };
   }
-  const span = Math.max(source[source.length - 1].mass - source[0].mass, 0.02);
-  const padding = span * 0.03;
-  return { minX: source[0].mass - padding, maxX: source[source.length - 1].mass + padding };
+  const minMass = source[0].mass;
+  const maxMass = source[source.length - 1].mass;
+  const center = averageMassCenter(source);
+  const halfSpan = Math.max(center - minMass, maxMass - center, 0.01);
+  const padding = Math.max(halfSpan * 0.08, 0.01);
+  return { minX: center - halfSpan - padding, maxX: center + halfSpan + padding };
 }
 
 function clampView(view) {
@@ -350,6 +363,15 @@ function nearestDatum(mass) {
   return best;
 }
 
+function getPeakFilterThreshold() {
+  return Math.max(0, Number(elements.peakFilterInput.value) || 0);
+}
+
+function getFilteredPeaks() {
+  const threshold = getPeakFilterThreshold();
+  return state.peaks.filter((peak) => peak.intensity >= threshold);
+}
+
 function renderPlot() {
   if (!state.peaks.length) {
     elements.plot.innerHTML = '<div class="plot-empty">No spectrum to display.</div>';
@@ -360,7 +382,7 @@ function renderPlot() {
   const visible = getVisibleData();
   const width = Math.max(elements.plot.clientWidth || 320, 320);
   const height = 540;
-  const margin = { top: 20, right: 24, bottom: 44, left: 68 };
+  const margin = { top: 20, right: 44, bottom: 44, left: 88 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
   const minX = state.view.minX;
@@ -390,11 +412,12 @@ function renderPlot() {
     return `<line x1="${margin.left}" y1="${y}" x2="${margin.left + plotWidth}" y2="${y}" stroke="rgba(24,36,45,0.08)" /><text x="${margin.left - 10}" y="${y + 4}" text-anchor="end" font-size="11" fill="#56646f">${value}</text>`;
   }).join("");
 
-  elements.plot.innerHTML = `<svg class="plot-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none"><rect x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" fill="rgba(255,255,255,0.72)" rx="14"></rect>${xTickMarkup}${yTickMarkup}<line x1="${margin.left}" y1="${margin.top + plotHeight}" x2="${margin.left + plotWidth}" y2="${margin.top + plotHeight}" stroke="#23343f" /><line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + plotHeight}" stroke="#23343f" />${profileMarkup}${sticksMarkup}<line id="hover-line" x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + plotHeight}" stroke="#0a4c57" stroke-dasharray="4 4" opacity="0"></line><text x="${margin.left + plotWidth / 2}" y="${height - 2}" text-anchor="middle" font-size="12" fill="#18242d">m/z</text><text x="18" y="${margin.top + plotHeight / 2}" text-anchor="middle" font-size="12" fill="#18242d" transform="rotate(-90 18 ${margin.top + plotHeight / 2})">Relative intensity</text></svg><div id="plot-tooltip" class="plot-tooltip"></div>`;
+  elements.plot.innerHTML = `<svg class="plot-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none"><rect x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" fill="rgba(255,255,255,0.72)" rx="14"></rect>${xTickMarkup}${yTickMarkup}<line x1="${margin.left}" y1="${margin.top + plotHeight}" x2="${margin.left + plotWidth}" y2="${margin.top + plotHeight}" stroke="#23343f" /><line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + plotHeight}" stroke="#23343f" />${profileMarkup}${sticksMarkup}<line id="hover-line" x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + plotHeight}" stroke="#0a4c57" stroke-dasharray="4 4" opacity="0"></line><text x="${margin.left + plotWidth / 2}" y="${height - 2}" text-anchor="middle" font-size="12" fill="#18242d">m/z</text><text x="18" y="${margin.top + plotHeight / 2}" text-anchor="middle" font-size="12" fill="#18242d" transform="rotate(-90 18 ${margin.top + plotHeight / 2})">Relative intensity</text></svg><div id="plot-tooltip" class="plot-tooltip"></div><div id="zoom-box" class="zoom-box"></div>`;
 
   const svg = elements.plot.querySelector(".plot-svg");
   const tooltip = elements.plot.querySelector("#plot-tooltip");
   const hoverLine = elements.plot.querySelector("#hover-line");
+  const zoomBox = elements.plot.querySelector("#zoom-box");
 
   const massFromClientX = (clientX) => {
     const rect = elements.plot.getBoundingClientRect();
@@ -434,44 +457,71 @@ function renderPlot() {
     renderPlot();
   }, { passive: false });
 
-  let dragStartX = 0;
-  let dragStartView = null;
+  const plotRect = () => elements.plot.getBoundingClientRect();
+
   svg.addEventListener("pointerdown", (event) => {
-    dragStartX = event.clientX;
-    dragStartView = { ...state.view };
+    if (event.button !== 0) {
+      return;
+    }
+    const rect = plotRect();
+    const start = Math.min(Math.max(event.clientX - rect.left, margin.left), rect.width - margin.right);
+    state.selection = { start, current: start, pointerId: event.pointerId };
+    zoomBox.style.left = `${start}px`;
+    zoomBox.style.width = '0px';
+    zoomBox.style.top = `${margin.top}px`;
+    zoomBox.style.height = `${plotHeight}px`;
+    zoomBox.style.opacity = '1';
     svg.setPointerCapture(event.pointerId);
   });
 
   svg.addEventListener("pointermove", (event) => {
-    if (!dragStartView) {
+    if (state.selection && state.selection.pointerId === event.pointerId) {
+      const rect = plotRect();
+      const current = Math.min(Math.max(event.clientX - rect.left, margin.left), rect.width - margin.right);
+      state.selection.current = current;
+      const left = Math.min(state.selection.start, current);
+      const widthPx = Math.abs(current - state.selection.start);
+      zoomBox.style.left = `${left}px`;
+      zoomBox.style.width = `${widthPx}px`;
+      zoomBox.style.opacity = widthPx > 2 ? '1' : '0';
       return;
     }
-    const rect = elements.plot.getBoundingClientRect();
-    const span = dragStartView.maxX - dragStartView.minX;
-    const deltaMass = ((event.clientX - dragStartX) / rect.width) * span;
-    state.view = clampView({ minX: dragStartView.minX - deltaMass, maxX: dragStartView.maxX - deltaMass });
-    renderPlot();
   });
 
-  const stopDrag = () => {
-    dragStartView = null;
+  const stopDrag = (event) => {
+    if (!state.selection || (event && state.selection.pointerId !== event.pointerId)) {
+      return;
+    }
+    const widthPx = Math.abs(state.selection.current - state.selection.start);
+    if (widthPx > 8) {
+      const left = Math.min(state.selection.start, state.selection.current);
+      const right = Math.max(state.selection.start, state.selection.current);
+      const leftMass = minX + ((left - margin.left) / plotWidth) * (maxX - minX);
+      const rightMass = minX + ((right - margin.left) / plotWidth) * (maxX - minX);
+      state.view = clampView({ minX: leftMass, maxX: rightMass });
+    }
+    state.selection = null;
+    zoomBox.style.opacity = '0';
+    renderPlot();
   };
   svg.addEventListener("pointerup", stopDrag);
   svg.addEventListener("pointercancel", stopDrag);
 }
 
 function renderTable() {
-  const rows = state.peaks.slice(0, 250).map((peak, index) => `\n      <tr>\n        <td>${index + 1}</td>\n        <td>${peak.mass.toFixed(5)}</td>\n        <td>${peak.intensity.toFixed(3)}</td>\n      </tr>\n    `).join("");
-  elements.peakTableBody.innerHTML = rows || '<tr><td colspan="3">No peaks available.</td></tr>';
+  const filteredPeaks = getFilteredPeaks();
+  const rows = filteredPeaks.slice(0, 250).map((peak, index) => `\n      <tr>\n        <td>${index + 1}</td>\n        <td>${peak.mass.toFixed(5)}</td>\n        <td>${peak.intensity.toFixed(3)}</td>\n      </tr>\n    `).join("");
+  elements.peakTableBody.innerHTML = rows || '<tr><td colspan="3">No peaks match the current filter.</td></tr>';
 }
 
 function updateSummary(composition, charge, polarity) {
   const monoMass = monoisotopicMass(composition);
   const monoMz = applyChargeToMass(monoMass, charge, polarity);
+  const filteredPeaks = getFilteredPeaks();
   const basePeak = state.peaks.reduce((best, current) => current.intensity > best.intensity ? current : best, { mass: 0, intensity: 0 });
   elements.monoisotopicMass.textContent = monoMass.toFixed(5);
   elements.monoisotopicMz.textContent = monoMz.toFixed(5);
-  elements.peakCount.textContent = String(state.peaks.length);
+  elements.peakCount.textContent = String(filteredPeaks.length);
   elements.basePeak.textContent = `${basePeak.mass.toFixed(5)} / ${basePeak.intensity.toFixed(2)}`;
 }
 
@@ -491,16 +541,17 @@ function sanitizeFilename(value) {
 }
 
 function exportPeaksCsv() {
-  if (!state.peaks.length) {
-    setStatus("Run a simulation before exporting peaks.", true);
+  const filteredPeaks = getFilteredPeaks();
+  if (!filteredPeaks.length) {
+    setStatus("No centroid peaks match the current filter.", true);
     return;
   }
   const lines = ["mz,relative_intensity"];
-  for (const peak of state.peaks) {
+  for (const peak of filteredPeaks) {
     lines.push(`${peak.mass.toFixed(8)},${peak.intensity.toFixed(6)}`);
   }
   downloadCsv(lines.join("\n"), `${sanitizeFilename(state.formula)}-peaks.csv`);
-  setStatus(`Downloaded centroid peaks for ${state.formula}.`);
+  setStatus(`Downloaded ${filteredPeaks.length} centroid peaks for ${state.formula}.`);
 }
 
 function exportProfileCsv() {
@@ -577,6 +628,10 @@ function bindEvents() {
   elements.profileDownload.addEventListener("click", exportProfileCsv);
   elements.profileToggle.addEventListener("change", () => simulate(true));
   elements.sticksToggle.addEventListener("change", renderPlot);
+  elements.peakFilterInput.addEventListener("input", () => {
+    renderTable();
+    updateSummary(state.composition, state.charge, state.polarity);
+  });
   elements.resolutionInput.addEventListener("change", () => simulate(true));
   elements.samplesInput.addEventListener("change", () => simulate(true));
   elements.chargeInput.addEventListener("change", () => simulate(true));
