@@ -7,8 +7,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260409d">
-  <script src="orbitrap.js?v=20260409d" defer></script>
+  <link rel="stylesheet" href="styles.css?v=20260409e">
+  <script src="orbitrap.js?v=20260409e" defer></script>
 </head>
 <body>
   <div class="page-shell">
@@ -43,41 +43,41 @@
 
         <label class="field">
           <span>Ion Count</span>
-          <input id="ion-count-input" type="range" min="6" max="48" step="1" value="18">
-          <output id="ion-count-output" for="ion-count-input">18</output>
+          <input id="ion-count-input" type="range" min="6" max="48" step="1" value="28">
+          <output id="ion-count-output" for="ion-count-input">28</output>
         </label>
 
         <label class="field">
           <span>Orbital Speed</span>
-          <input id="orbital-speed-input" type="range" min="0.2" max="2.4" step="0.1" value="1.1">
-          <output id="orbital-speed-output" for="orbital-speed-input">1.1x</output>
+          <input id="orbital-speed-input" type="range" min="0.2" max="2.4" step="0.1" value="1">
+          <output id="orbital-speed-output" for="orbital-speed-input">1.0x</output>
         </label>
 
         <label class="field">
           <span>Axial Oscillation</span>
-          <input id="axial-amplitude-input" type="range" min="0.1" max="1.2" step="0.05" value="0.7">
-          <output id="axial-amplitude-output" for="axial-amplitude-input">0.70</output>
+          <input id="axial-amplitude-input" type="range" min="0.1" max="1.2" step="0.05" value="1">
+          <output id="axial-amplitude-output" for="axial-amplitude-input">1.00</output>
         </label>
 
         <label class="field">
           <span>Trail Length</span>
-          <input id="trail-length-input" type="range" min="12" max="90" step="1" value="40">
-          <output id="trail-length-output" for="trail-length-input">40</output>
+          <input id="trail-length-input" type="range" min="12" max="90" step="1" value="25">
+          <output id="trail-length-output" for="trail-length-input">25</output>
         </label>
 
         <div class="field">
           <span>Ion Masses</span>
           <div class="mass-input-grid">
             <label class="mass-field">
-              <span class="mass-chip mass-chip-light">Light</span>
+              <button id="mass-light-toggle" class="mass-chip mass-chip-light mass-chip-toggle is-active" type="button" aria-pressed="true">Light</button>
               <input id="mass-light-input" type="number" min="50" max="4000" step="1" value="150">
             </label>
             <label class="mass-field">
-              <span class="mass-chip mass-chip-mid">Mid</span>
+              <button id="mass-mid-toggle" class="mass-chip mass-chip-mid mass-chip-toggle is-active" type="button" aria-pressed="true">Mid</button>
               <input id="mass-mid-input" type="number" min="50" max="4000" step="1" value="500">
             </label>
             <label class="mass-field">
-              <span class="mass-chip mass-chip-heavy">Heavy</span>
+              <button id="mass-heavy-toggle" class="mass-chip mass-chip-heavy mass-chip-toggle is-active" type="button" aria-pressed="true">Heavy</button>
               <input id="mass-heavy-input" type="number" min="50" max="4000" step="1" value="1200">
             </label>
           </div>

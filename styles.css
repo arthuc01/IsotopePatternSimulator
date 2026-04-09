@@ -409,6 +409,21 @@ output {
   padding: 0 12px;
 }
 
+.mass-chip-toggle {
+  border: 0;
+  cursor: pointer;
+  transition: transform 150ms ease, opacity 150ms ease, box-shadow 150ms ease;
+}
+
+.mass-chip-toggle:hover {
+  transform: translateY(-1px);
+}
+
+.mass-chip-toggle.is-inactive {
+  opacity: 0.45;
+  box-shadow: inset 0 0 0 1px rgba(24, 36, 45, 0.18);
+}
+
 .mass-chip-light {
   background: hsl(205, 92%, 44%);
 }

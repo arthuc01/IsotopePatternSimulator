@@ -13,6 +13,9 @@ const controls = {
   massLight: document.getElementById("mass-light-input"),
   massMid: document.getElementById("mass-mid-input"),
   massHeavy: document.getElementById("mass-heavy-input"),
+  massLightToggle: document.getElementById("mass-light-toggle"),
+  massMidToggle: document.getElementById("mass-mid-toggle"),
+  massHeavyToggle: document.getElementById("mass-heavy-toggle"),
   toggle: document.getElementById("orbitrap-toggle"),
   reset: document.getElementById("orbitrap-reset")
 };
@@ -32,9 +35,9 @@ const animationState = {
 };
 
 const massBands = [
-  { key: "light", label: "Light", hue: 205, control: controls.massLight },
-  { key: "mid", label: "Mid", hue: 128, control: controls.massMid },
-  { key: "heavy", label: "Heavy", hue: 42, control: controls.massHeavy }
+  { key: "light", label: "Light", hue: 205, control: controls.massLight, toggle: controls.massLightToggle, enabled: true, required: true },
+  { key: "mid", label: "Mid", hue: 128, control: controls.massMid, toggle: controls.massMidToggle, enabled: true, required: false },
+  { key: "heavy", label: "Heavy", hue: 42, control: controls.massHeavy, toggle: controls.massHeavyToggle, enabled: true, required: false }
 ];
 
 function resizeCanvas() {
@@ -85,6 +88,14 @@ function getMassValues() {
       hue: band.hue,
       mass: Math.round(clampedValue)
     };
+  }).filter((band, index) => massBands[index].enabled);
+}
+
+function syncMassToggles() {
+  massBands.forEach((band) => {
+    band.toggle.classList.toggle("is-active", band.enabled);
+    band.toggle.classList.toggle("is-inactive", !band.enabled);
+    band.toggle.setAttribute("aria-pressed", String(band.enabled));
   });
 }
 
@@ -423,6 +434,14 @@ controls.axialAmplitude.addEventListener('input', () => {
 controls.trailLength.addEventListener('input', syncOutputs);
 massBands.forEach((band) => {
   band.control.addEventListener('input', resetIons);
+  band.toggle.addEventListener('click', () => {
+    if (band.required) {
+      return;
+    }
+    band.enabled = !band.enabled;
+    syncMassToggles();
+    resetIons();
+  });
 });
 
 controls.toggle.addEventListener('click', () => {
@@ -435,5 +454,6 @@ window.addEventListener('resize', resizeCanvas);
 
 resizeCanvas();
 syncOutputs();
+syncMassToggles();
 resetIons();
 requestAnimationFrame(renderFrame);
