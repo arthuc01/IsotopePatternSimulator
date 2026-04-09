@@ -510,11 +510,12 @@ function drawArrivalTrace(width, height, elapsedSeconds) {
   const masses = getMasses();
   const samples = 160;
   const kernelWidth = Math.max(maxTime * 0.012, 1e-7);
+  const axisMaxTime = maxTime + (kernelWidth * 3.5);
 
   masses.forEach((massBand) => {
     const ions = tofState.packet.filter((ion) => ion.label === massBand.label);
     const profile = Array.from({ length: samples }, (_, index) => {
-      const time = (index / (samples - 1)) * maxTime;
+      const time = (index / (samples - 1)) * axisMaxTime;
       const intensity = ions.reduce((sum, ion) => {
         const activation = elapsedSeconds >= ion.displayTime ? 1 : 0;
         if (!activation) {
@@ -531,7 +532,7 @@ function drawArrivalTrace(width, height, elapsedSeconds) {
     tofContext.lineWidth = 2.2;
     tofContext.beginPath();
     profile.forEach((point, index) => {
-      const x = left + (point.time / maxTime) * (right - left);
+      const x = left + (point.time / axisMaxTime) * (right - left);
       const y = layout.traceBottom - (point.intensity / peak) * (traceHeight - 10);
       if (index === 0) {
         tofContext.moveTo(x, y);
@@ -543,7 +544,7 @@ function drawArrivalTrace(width, height, elapsedSeconds) {
 
     const arrivedIons = ions.filter((ion) => elapsedSeconds >= ion.displayTime);
     arrivedIons.forEach((ion) => {
-      const x = left + (ion.totalTime / maxTime) * (right - left);
+      const x = left + (ion.totalTime / axisMaxTime) * (right - left);
       tofContext.fillStyle = `hsla(${ion.hue}, 92%, 48%, ${0.3 + ion.packetWeight * 2.8})`;
       tofContext.beginPath();
       tofContext.arc(x, layout.traceBottom - 4, 2.4 + ion.packetWeight * 18, 0, Math.PI * 2);
