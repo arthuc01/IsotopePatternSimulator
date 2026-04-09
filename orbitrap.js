@@ -72,8 +72,9 @@ function createIon(index, count) {
   const radius = stableRadius + perturbation;
   const l = radius * radius * omegaPhi(radius);
   const axialPhase = (Math.PI * 2 * index) / Math.max(count, 1);
-  const mzFactor = 0.7 + Math.random() * 0.9;
+  const mzFactor = 0.65 + ((index + 0.5) / Math.max(count, 1)) * 1.35;
   const frequencyScale = 1 / Math.sqrt(mzFactor);
+  const hue = 205 - ((mzFactor - 0.65) / 1.35) * 155;
   return {
     r: radius,
     rDot: (Math.random() - 0.5) * 0.015,
@@ -81,10 +82,11 @@ function createIon(index, count) {
     angularMomentum: l,
     zAmplitude: 0.22 * Number(controls.axialAmplitude.value) * (0.88 + Math.random() * 0.24),
     axialPhase,
-    hue: 186 + Math.random() * 24,
+    hue,
     referenceRadius: radius,
     mzFactor,
-    frequencyScale
+    frequencyScale,
+    history: []
   };
 }
 
@@ -110,6 +112,8 @@ function advanceIon(ion, dt) {
     ion.referenceRadius = replacement.referenceRadius;
     ion.mzFactor = replacement.mzFactor;
     ion.frequencyScale = replacement.frequencyScale;
+    ion.hue = replacement.hue;
+    ion.history = [];
   }
 }
 
@@ -267,15 +271,13 @@ function drawElectrodes(origin, scale) {
 function drawIons(origin, scale) {
   const trailLength = Number(controls.trailLength.value);
   animationState.ions.forEach((ion) => {
-    const trailPoints = [];
-    for (let step = trailLength; step >= 0; step -= 1) {
-      const t = animationState.time - step * 0.026;
-      const point = sampleIonPosition(ion, t);
-      trailPoints.push({
-        x: origin.x + point.z * scale.z,
-        y: origin.y - point.projectedR * scale.r,
-        alpha: 1 - (step / (trailLength + 1))
-      });
+    const trailPoints = ion.history.slice(-trailLength - 1).map((point, index, array) => ({
+      x: origin.x + point.z * scale.z,
+      y: origin.y - point.projectedR * scale.r,
+      alpha: (index + 1) / Math.max(array.length, 1)
+    }));
+    if (!trailPoints.length) {
+      return;
     }
 
     for (let index = 1; index < trailPoints.length; index += 1) {
@@ -284,8 +286,8 @@ function drawIons(origin, scale) {
       orbitrapContext.beginPath();
       orbitrapContext.moveTo(previous.x, previous.y);
       orbitrapContext.lineTo(current.x, current.y);
-      orbitrapContext.strokeStyle = `hsla(${ion.hue}, 92%, 56%, ${0.05 + current.alpha * 0.55})`;
-      orbitrapContext.lineWidth = 1.2 + current.alpha * 2.4;
+      orbitrapContext.strokeStyle = `hsla(${ion.hue}, 92%, 56%, ${0.04 + current.alpha * 0.72})`;
+      orbitrapContext.lineWidth = 1.0 + current.alpha * 2.8;
       orbitrapContext.lineCap = "round";
       orbitrapContext.stroke();
     }
@@ -296,6 +298,35 @@ function drawIons(origin, scale) {
     orbitrapContext.fillStyle = `hsla(${ion.hue}, 96%, 56%, 0.95)`;
     orbitrapContext.fill();
   });
+}
+
+function drawMassLegend(width) {
+  const legendX = width - 178;
+  const legendY = 24;
+  orbitrapContext.save();
+  orbitrapContext.fillStyle = "rgba(255, 255, 255, 0.72)";
+  orbitrapContext.strokeStyle = "rgba(24, 36, 45, 0.10)";
+  orbitrapContext.lineWidth = 1;
+  orbitrapContext.beginPath();
+  orbitrapContext.roundRect(legendX, legendY, 154, 70, 14);
+  orbitrapContext.fill();
+  orbitrapContext.stroke();
+
+  orbitrapContext.font = '500 12px "IBM Plex Mono", monospace';
+  orbitrapContext.fillStyle = "rgba(24, 36, 45, 0.78)";
+  orbitrapContext.fillText("relative m/z", legendX + 14, legendY + 20);
+
+  const gradient = orbitrapContext.createLinearGradient(legendX + 14, 0, legendX + 140, 0);
+  gradient.addColorStop(0, "hsl(205, 92%, 56%)");
+  gradient.addColorStop(0.5, "hsl(130, 92%, 56%)");
+  gradient.addColorStop(1, "hsl(50, 92%, 56%)");
+  orbitrapContext.fillStyle = gradient;
+  orbitrapContext.fillRect(legendX + 14, legendY + 30, 126, 12);
+
+  orbitrapContext.fillStyle = "rgba(24, 36, 45, 0.78)";
+  orbitrapContext.fillText("lighter", legendX + 14, legendY + 58);
+  orbitrapContext.fillText("heavier", legendX + 84, legendY + 58);
+  orbitrapContext.restore();
 }
 
 function renderFrame(now) {
@@ -309,6 +340,14 @@ function renderFrame(now) {
     animationState.time += delta * speed;
     animationState.ions.forEach((ion) => advanceIon(ion, delta * speed));
   }
+  animationState.ions.forEach((ion) => {
+    const point = sampleIonPosition(ion, animationState.time);
+    ion.history.push(point);
+    const maxHistory = Number(controls.trailLength.value) + 2;
+    if (ion.history.length > maxHistory) {
+      ion.history.splice(0, ion.history.length - maxHistory);
+    }
+  });
 
   orbitrapContext.clearRect(0, 0, width, height);
   const bgGradient = orbitrapContext.createRadialGradient(width / 2, height / 2, 40, width / 2, height / 2, width * 0.48);
@@ -331,6 +370,7 @@ function renderFrame(now) {
   drawEquipotentials(origin, scale);
   drawElectrodes(origin, scale);
   drawIons(origin, scale);
+  drawMassLegend(width);
 
   orbitrapContext.fillStyle = 'rgba(24, 36, 45, 0.78)';
   orbitrapContext.font = '500 13px "IBM Plex Mono", monospace';
