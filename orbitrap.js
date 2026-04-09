@@ -72,6 +72,8 @@ function createIon(index, count) {
   const radius = stableRadius + perturbation;
   const l = radius * radius * omegaPhi(radius);
   const axialPhase = (Math.PI * 2 * index) / Math.max(count, 1);
+  const mzFactor = 0.7 + Math.random() * 0.9;
+  const frequencyScale = 1 / Math.sqrt(mzFactor);
   return {
     r: radius,
     rDot: (Math.random() - 0.5) * 0.015,
@@ -80,7 +82,9 @@ function createIon(index, count) {
     zAmplitude: 0.22 * Number(controls.axialAmplitude.value) * (0.88 + Math.random() * 0.24),
     axialPhase,
     hue: 186 + Math.random() * 24,
-    referenceRadius: radius
+    referenceRadius: radius,
+    mzFactor,
+    frequencyScale
   };
 }
 
@@ -104,11 +108,13 @@ function advanceIon(ion, dt) {
     ion.angularMomentum = replacement.angularMomentum;
     ion.zAmplitude = replacement.zAmplitude;
     ion.referenceRadius = replacement.referenceRadius;
+    ion.mzFactor = replacement.mzFactor;
+    ion.frequencyScale = replacement.frequencyScale;
   }
 }
 
 function sampleIonPosition(ion, timeOffset) {
-  const z = ion.zAmplitude * Math.cos(trapModel.omegaZ * timeOffset + ion.axialPhase);
+  const z = ion.zAmplitude * Math.cos(trapModel.omegaZ * ion.frequencyScale * timeOffset + ion.axialPhase);
   const projectedR = ion.r * Math.cos(ion.theta);
   return { z, projectedR };
 }
@@ -261,17 +267,34 @@ function drawElectrodes(origin, scale) {
 function drawIons(origin, scale) {
   const trailLength = Number(controls.trailLength.value);
   animationState.ions.forEach((ion) => {
+    const trailPoints = [];
     for (let step = trailLength; step >= 0; step -= 1) {
       const t = animationState.time - step * 0.026;
       const point = sampleIonPosition(ion, t);
-      const x = origin.x + point.z * scale.z;
-      const y = origin.y - point.projectedR * scale.r;
-      const alpha = 1 - (step / (trailLength + 1));
-      orbitrapContext.beginPath();
-      orbitrapContext.arc(x, y, step === 0 ? 4.6 : 1.8 + alpha * 2.0, 0, Math.PI * 2);
-      orbitrapContext.fillStyle = `hsla(${ion.hue}, 92%, 56%, ${0.08 + alpha * 0.78})`;
-      orbitrapContext.fill();
+      trailPoints.push({
+        x: origin.x + point.z * scale.z,
+        y: origin.y - point.projectedR * scale.r,
+        alpha: 1 - (step / (trailLength + 1))
+      });
     }
+
+    for (let index = 1; index < trailPoints.length; index += 1) {
+      const previous = trailPoints[index - 1];
+      const current = trailPoints[index];
+      orbitrapContext.beginPath();
+      orbitrapContext.moveTo(previous.x, previous.y);
+      orbitrapContext.lineTo(current.x, current.y);
+      orbitrapContext.strokeStyle = `hsla(${ion.hue}, 92%, 56%, ${0.05 + current.alpha * 0.55})`;
+      orbitrapContext.lineWidth = 1.2 + current.alpha * 2.4;
+      orbitrapContext.lineCap = "round";
+      orbitrapContext.stroke();
+    }
+
+    const head = trailPoints[trailPoints.length - 1];
+    orbitrapContext.beginPath();
+    orbitrapContext.arc(head.x, head.y, 4.8, 0, Math.PI * 2);
+    orbitrapContext.fillStyle = `hsla(${ion.hue}, 96%, 56%, 0.95)`;
+    orbitrapContext.fill();
   });
 }
 
@@ -312,7 +335,7 @@ function renderFrame(now) {
   orbitrapContext.fillStyle = 'rgba(24, 36, 45, 0.78)';
   orbitrapContext.font = '500 13px "IBM Plex Mono", monospace';
   orbitrapContext.fillText('U(r,z) = k/2 (z^2 - r^2/2) + k/2 Rm^2 ln(r/Rm)', 24, 28);
-  orbitrapContext.fillText('z(t) is harmonic; radial motion is numerically integrated from Eq. 3', 24, 48);
+  orbitrapContext.fillText('Mixed m/z packet: omega_z ~ (m/z)^-1/2; radial motion numerically integrated from Eq. 3', 24, 48);
 
   requestAnimationFrame(renderFrame);
 }
