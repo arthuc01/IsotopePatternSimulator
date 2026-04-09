@@ -212,6 +212,8 @@ function renderTofTable() {
 }
 
 function getTofLayout(width, height) {
+  const analyzerCenterY = height * 0.56;
+  const analyzerGap = height * 0.20;
   return {
     sourceX: width * 0.08,
     accelStartX: width * 0.14,
@@ -220,10 +222,10 @@ function getTofLayout(width, height) {
     reflectorEndX: width * 0.92,
     linearDetectorX: width * 0.88,
     reflectronDetectorX: width * 0.88,
-    lowerY: height * 0.66,
-    upperY: height * 0.34,
-    traceTop: height * 0.77,
-    traceBottom: height * 0.94
+    lowerY: analyzerCenterY + analyzerGap / 2,
+    upperY: analyzerCenterY - analyzerGap / 2,
+    traceTop: height * 0.76,
+    traceBottom: height * 0.93
   };
 }
 
@@ -399,14 +401,14 @@ function drawArrivalTrace(width, height, elapsedSeconds) {
   tofState.packet.forEach((ion) => {
     const x = left + (ion.totalTime / maxTime) * (right - left);
     const y = layout.traceBottom - (ion.energyFactor - (1 - Number(tofControls.spread.value) / 100)) / Math.max((Number(tofControls.spread.value) / 50) || 0.0001, 0.0001) * traceHeight;
-    tofContext.strokeStyle = `hsla(${ion.hue}, 92%, 50%, 0.55)`;
-    tofContext.lineWidth = 2;
-    tofContext.beginPath();
-    tofContext.moveTo(x, layout.traceBottom);
-    tofContext.lineTo(x, Math.max(layout.traceTop + 8, Math.min(layout.traceBottom - 8, y)));
-    tofContext.stroke();
-
     if (elapsedSeconds >= ion.displayTime) {
+      tofContext.strokeStyle = `hsla(${ion.hue}, 92%, 50%, 0.55)`;
+      tofContext.lineWidth = 2;
+      tofContext.beginPath();
+      tofContext.moveTo(x, layout.traceBottom);
+      tofContext.lineTo(x, Math.max(layout.traceTop + 8, Math.min(layout.traceBottom - 8, y)));
+      tofContext.stroke();
+
       tofContext.fillStyle = `hsla(${ion.hue}, 92%, 48%, 0.92)`;
       tofContext.beginPath();
       tofContext.arc(x, layout.traceTop + 10, 3.8, 0, Math.PI * 2);
