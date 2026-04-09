@@ -7,8 +7,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260409c">
-  <script src="orbitrap.js?v=20260409c" defer></script>
+  <link rel="stylesheet" href="styles.css?v=20260409d">
+  <script src="orbitrap.js?v=20260409d" defer></script>
 </head>
 <body>
   <div class="page-shell">
@@ -64,6 +64,24 @@
           <input id="trail-length-input" type="range" min="12" max="90" step="1" value="40">
           <output id="trail-length-output" for="trail-length-input">40</output>
         </label>
+
+        <div class="field">
+          <span>Ion Masses</span>
+          <div class="mass-input-grid">
+            <label class="mass-field">
+              <span class="mass-chip mass-chip-light">Light</span>
+              <input id="mass-light-input" type="number" min="50" max="4000" step="1" value="150">
+            </label>
+            <label class="mass-field">
+              <span class="mass-chip mass-chip-mid">Mid</span>
+              <input id="mass-mid-input" type="number" min="50" max="4000" step="1" value="500">
+            </label>
+            <label class="mass-field">
+              <span class="mass-chip mass-chip-heavy">Heavy</span>
+              <input id="mass-heavy-input" type="number" min="50" max="4000" step="1" value="1200">
+            </label>
+          </div>
+        </div>
 
         <div class="summary-grid">
           <div class="summary-card">

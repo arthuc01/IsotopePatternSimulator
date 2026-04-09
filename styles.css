@@ -387,6 +387,41 @@ output {
   margin-bottom: 14px;
 }
 
+.mass-input-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.mass-field {
+  display: grid;
+  gap: 8px;
+}
+
+.mass-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  border-radius: 999px;
+  font: 500 0.82rem "IBM Plex Mono", monospace;
+  color: #f8fbfb;
+  padding: 0 12px;
+}
+
+.mass-chip-light {
+  background: hsl(205, 92%, 44%);
+}
+
+.mass-chip-mid {
+  background: hsl(128, 78%, 38%);
+}
+
+.mass-chip-heavy {
+  background: hsl(42, 92%, 44%);
+  color: #24323b;
+}
+
 .orbitrap-grid {
   align-items: start;
 }
@@ -456,6 +491,10 @@ code {
 
   .summary-grid {
     grid-template-columns: repeat(2, minmax(140px, 1fr));
+  }
+
+  .mass-input-grid {
+    grid-template-columns: 1fr;
   }
 }
 

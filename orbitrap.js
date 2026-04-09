@@ -10,6 +10,9 @@ const controls = {
   axialAmplitudeOutput: document.getElementById("axial-amplitude-output"),
   trailLength: document.getElementById("trail-length-input"),
   trailLengthOutput: document.getElementById("trail-length-output"),
+  massLight: document.getElementById("mass-light-input"),
+  massMid: document.getElementById("mass-mid-input"),
+  massHeavy: document.getElementById("mass-heavy-input"),
   toggle: document.getElementById("orbitrap-toggle"),
   reset: document.getElementById("orbitrap-reset")
 };
@@ -27,6 +30,12 @@ const animationState = {
   lastFrame: performance.now(),
   ions: []
 };
+
+const massBands = [
+  { key: "light", label: "Light", hue: 205, control: controls.massLight },
+  { key: "mid", label: "Mid", hue: 128, control: controls.massMid },
+  { key: "heavy", label: "Heavy", hue: 42, control: controls.massHeavy }
+];
 
 function resizeCanvas() {
   const stageWidth = orbitrapCanvas.parentElement.clientWidth;
@@ -65,6 +74,20 @@ function omegaPhi(radius) {
   return Math.sqrt(Math.max((trapModel.Rm * trapModel.Rm) / (radius * radius) - 1, 0) / 2);
 }
 
+function getMassValues() {
+  return massBands.map((band, index) => {
+    const fallback = [150, 500, 1200][index];
+    const rawValue = Number(band.control.value);
+    const clampedValue = Number.isFinite(rawValue) ? Math.min(4000, Math.max(50, rawValue)) : fallback;
+    band.control.value = String(Math.round(clampedValue));
+    return {
+      label: band.label,
+      hue: band.hue,
+      mass: Math.round(clampedValue)
+    };
+  });
+}
+
 function createIon(index, count) {
   const baseRadius = 0.54 + 0.1 * ((index + 0.5) / Math.max(count, 1));
   const stableRadius = Math.min(baseRadius, trapModel.Rm / Math.sqrt(2) - 0.03);
@@ -72,9 +95,12 @@ function createIon(index, count) {
   const radius = stableRadius + perturbation;
   const l = radius * radius * omegaPhi(radius);
   const axialPhase = (Math.PI * 2 * index) / Math.max(count, 1);
-  const mzFactor = 0.65 + ((index + 0.5) / Math.max(count, 1)) * 1.35;
-  const frequencyScale = 1 / Math.sqrt(mzFactor);
-  const hue = 205 - ((mzFactor - 0.65) / 1.35) * 155;
+  const masses = getMassValues();
+  const band = masses[index % masses.length];
+  const referenceMass = masses[1]?.mass ?? masses[0].mass;
+  const mzFactor = band.mass / referenceMass;
+  const frequencyScale = Math.sqrt(referenceMass / band.mass);
+  const hue = band.hue;
   return {
     r: radius,
     rDot: (Math.random() - 0.5) * 0.015,
@@ -83,6 +109,8 @@ function createIon(index, count) {
     zAmplitude: 0.22 * Number(controls.axialAmplitude.value) * (0.88 + Math.random() * 0.24),
     axialPhase,
     hue,
+    massLabel: band.label,
+    massValue: band.mass,
     referenceRadius: radius,
     mzFactor,
     frequencyScale,
@@ -113,6 +141,8 @@ function advanceIon(ion, dt) {
     ion.mzFactor = replacement.mzFactor;
     ion.frequencyScale = replacement.frequencyScale;
     ion.hue = replacement.hue;
+    ion.massLabel = replacement.massLabel;
+    ion.massValue = replacement.massValue;
     ion.history = [];
   }
 }
@@ -301,31 +331,32 @@ function drawIons(origin, scale) {
 }
 
 function drawMassLegend(width) {
-  const legendX = width - 178;
+  const legendX = width - 244;
   const legendY = 24;
+  const masses = getMassValues();
   orbitrapContext.save();
   orbitrapContext.fillStyle = "rgba(255, 255, 255, 0.72)";
   orbitrapContext.strokeStyle = "rgba(24, 36, 45, 0.10)";
   orbitrapContext.lineWidth = 1;
   orbitrapContext.beginPath();
-  orbitrapContext.roundRect(legendX, legendY, 154, 70, 14);
+  orbitrapContext.roundRect(legendX, legendY, 220, 116, 14);
   orbitrapContext.fill();
   orbitrapContext.stroke();
 
   orbitrapContext.font = '500 12px "IBM Plex Mono", monospace';
   orbitrapContext.fillStyle = "rgba(24, 36, 45, 0.78)";
-  orbitrapContext.fillText("relative m/z", legendX + 14, legendY + 20);
+  orbitrapContext.fillText("ion colours", legendX + 14, legendY + 20);
 
-  const gradient = orbitrapContext.createLinearGradient(legendX + 14, 0, legendX + 140, 0);
-  gradient.addColorStop(0, "hsl(205, 92%, 56%)");
-  gradient.addColorStop(0.5, "hsl(130, 92%, 56%)");
-  gradient.addColorStop(1, "hsl(50, 92%, 56%)");
-  orbitrapContext.fillStyle = gradient;
-  orbitrapContext.fillRect(legendX + 14, legendY + 30, 126, 12);
+  masses.forEach((mass, index) => {
+    const y = legendY + 42 + index * 22;
+    orbitrapContext.fillStyle = `hsl(${mass.hue}, 92%, 56%)`;
+    orbitrapContext.beginPath();
+    orbitrapContext.arc(legendX + 22, y - 4, 6, 0, Math.PI * 2);
+    orbitrapContext.fill();
 
-  orbitrapContext.fillStyle = "rgba(24, 36, 45, 0.78)";
-  orbitrapContext.fillText("lighter", legendX + 14, legendY + 58);
-  orbitrapContext.fillText("heavier", legendX + 84, legendY + 58);
+    orbitrapContext.fillStyle = "rgba(24, 36, 45, 0.78)";
+    orbitrapContext.fillText(`${mass.label}: ${mass.mass} m/z`, legendX + 38, y);
+  });
   orbitrapContext.restore();
 }
 
@@ -390,6 +421,9 @@ controls.axialAmplitude.addEventListener('input', () => {
   resetIons();
 });
 controls.trailLength.addEventListener('input', syncOutputs);
+massBands.forEach((band) => {
+  band.control.addEventListener('input', resetIons);
+});
 
 controls.toggle.addEventListener('click', () => {
   animationState.running = !animationState.running;
