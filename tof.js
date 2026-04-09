@@ -42,6 +42,7 @@ const tofState = {
   loopStart: performance.now(),
   elapsedMs: 0,
   cycleDurationMs: 6000,
+  activeFlightMs: 4400,
   packet: [],
   stats: []
 };
@@ -155,6 +156,7 @@ function createTofPacket() {
         mass: band.mass,
         energyFactor,
         totalTime,
+        displayTime: 0,
         mode
       };
       if (mode === "reflectron") {
@@ -183,7 +185,12 @@ function createTofPacket() {
   });
 
   const maxTime = Math.max(...tofState.packet.map((ion) => ion.totalTime));
+  tofState.activeFlightMs = 4400;
+  tofState.packet.forEach((ion) => {
+    ion.displayTime = (ion.totalTime / maxTime) * (tofState.activeFlightMs / 1000);
+  });
   tofState.cycleDurationMs = Math.max(3800, maxTime * 1000 * 1.18);
+  tofState.cycleDurationMs = Math.max(tofState.cycleDurationMs, tofState.activeFlightMs + 1200);
   tofState.loopStart = performance.now();
   renderTofTable();
 }
@@ -221,9 +228,9 @@ function getTofLayout(width, height) {
 }
 
 function positionLinearIon(ion, elapsedSeconds, layout) {
-  const effective = Math.min(elapsedSeconds, ion.totalTime);
-  const tAcceleration = ion.totalTime * 0.11;
-  const tDrift = ion.totalTime - tAcceleration;
+  const effective = Math.min(elapsedSeconds, ion.displayTime);
+  const tAcceleration = ion.displayTime * 0.11;
+  const tDrift = ion.displayTime - tAcceleration;
   const startX = layout.sourceX;
   const accelX = layout.accelEndX;
   const detectorX = layout.linearDetectorX;
@@ -239,16 +246,21 @@ function positionLinearIon(ion, elapsedSeconds, layout) {
 }
 
 function positionReflectronIon(ion, elapsedSeconds, layout) {
-  const effective = Math.min(elapsedSeconds, ion.totalTime);
+  const effective = Math.min(elapsedSeconds, ion.displayTime);
   const entryX = layout.splitterX;
   const detectorX = layout.reflectronDetectorX;
+  const scale = ion.displayTime / Math.max(ion.totalTime, 1e-9);
+  const tAcceleration = ion.tAcceleration * scale;
+  const tLower = ion.tLower * scale;
+  const tPenetration = ion.tPenetration * scale;
+  const tUpper = ion.tUpper * scale;
   const turnaroundDepth = Math.min(
     entryX + (layout.reflectorEndX - entryX) * (ion.penetration / (tofPhysics.lowerDriftLength * 0.34)),
     layout.reflectorEndX - 4
   );
 
-  if (effective <= ion.tAcceleration) {
-    const progress = effective / Math.max(ion.tAcceleration, 1e-9);
+  if (effective <= tAcceleration) {
+    const progress = effective / Math.max(tAcceleration, 1e-9);
     const eased = progress * progress;
     return {
       x: layout.sourceX + (layout.accelEndX - layout.sourceX) * eased,
@@ -256,30 +268,30 @@ function positionReflectronIon(ion, elapsedSeconds, layout) {
     };
   }
 
-  if (effective <= ion.tAcceleration + ion.tLower) {
-    const progress = (effective - ion.tAcceleration) / Math.max(ion.tLower, 1e-9);
+  if (effective <= tAcceleration + tLower) {
+    const progress = (effective - tAcceleration) / Math.max(tLower, 1e-9);
     return {
       x: layout.accelEndX + (entryX - layout.accelEndX) * progress,
       y: layout.lowerY
     };
   }
 
-  if (effective <= ion.tAcceleration + ion.tLower + ion.tPenetration) {
-    const progress = (effective - ion.tAcceleration - ion.tLower) / Math.max(ion.tPenetration, 1e-9);
+  if (effective <= tAcceleration + tLower + tPenetration) {
+    const progress = (effective - tAcceleration - tLower) / Math.max(tPenetration, 1e-9);
     return {
       x: entryX + (turnaroundDepth - entryX) * progress,
       y: layout.lowerY
     };
   }
 
-  if (effective <= ion.tAcceleration + ion.tLower + 2 * ion.tPenetration) {
-    const progress = (effective - ion.tAcceleration - ion.tLower - ion.tPenetration) / Math.max(ion.tPenetration, 1e-9);
+  if (effective <= tAcceleration + tLower + 2 * tPenetration) {
+    const progress = (effective - tAcceleration - tLower - tPenetration) / Math.max(tPenetration, 1e-9);
     const x = turnaroundDepth + (entryX - turnaroundDepth) * progress;
     const y = layout.lowerY - (layout.lowerY - layout.upperY) * Math.sin(progress * Math.PI) * 0.22;
     return { x, y };
   }
 
-  const progress = (effective - ion.tAcceleration - ion.tLower - 2 * ion.tPenetration) / Math.max(ion.tUpper, 1e-9);
+  const progress = (effective - tAcceleration - tLower - 2 * tPenetration) / Math.max(tUpper, 1e-9);
   return {
     x: entryX + (detectorX - entryX) * Math.min(progress, 1),
     y: layout.upperY
@@ -293,43 +305,44 @@ function drawTofBackground(width, height, layout, mode) {
   tofContext.fillStyle = gradient;
   tofContext.fillRect(0, 0, width, height);
 
-  tofContext.strokeStyle = "rgba(24, 36, 45, 0.16)";
-  tofContext.lineWidth = 2;
-  tofContext.setLineDash([7, 7]);
+  tofContext.fillStyle = "rgba(10, 76, 87, 0.08)";
+  tofContext.fillRect(layout.sourceX, layout.lowerY - 16, layout.linearDetectorX - layout.sourceX, 32);
+  tofContext.fillStyle = "rgba(13, 108, 116, 0.12)";
+  tofContext.fillRect(layout.accelStartX, layout.lowerY - 30, layout.accelEndX - layout.accelStartX, 60);
+
+  tofContext.strokeStyle = "rgba(24, 36, 45, 0.14)";
+  tofContext.lineWidth = 1.5;
+  tofContext.setLineDash([6, 6]);
   tofContext.beginPath();
   tofContext.moveTo(layout.sourceX, layout.lowerY);
   tofContext.lineTo(layout.linearDetectorX, layout.lowerY);
   tofContext.stroke();
   tofContext.setLineDash([]);
 
-  tofContext.fillStyle = "rgba(13, 108, 116, 0.10)";
-  tofContext.fillRect(layout.accelStartX, layout.lowerY - 26, layout.accelEndX - layout.accelStartX, 52);
-  tofContext.fillStyle = "rgba(217, 115, 13, 0.12)";
-  tofContext.fillRect(layout.splitterX, layout.upperY - 52, layout.reflectorEndX - layout.splitterX, layout.lowerY - layout.upperY + 104);
-
-  tofContext.strokeStyle = "rgba(10, 76, 87, 0.42)";
-  tofContext.lineWidth = 4;
-  tofContext.beginPath();
-  tofContext.moveTo(layout.sourceX, layout.lowerY);
-  tofContext.lineTo(layout.accelEndX, layout.lowerY);
-  tofContext.lineTo(layout.splitterX, layout.lowerY);
+  tofContext.strokeStyle = "rgba(10, 76, 87, 0.50)";
+  tofContext.lineWidth = 3;
+  tofContext.strokeRect(layout.sourceX, layout.lowerY - 16, layout.linearDetectorX - layout.sourceX, 32);
   if (mode === "reflectron") {
-    tofContext.lineTo(layout.reflectorEndX, layout.lowerY);
-    tofContext.moveTo(layout.splitterX, layout.upperY);
-    tofContext.lineTo(layout.reflectronDetectorX, layout.upperY);
+    tofContext.fillStyle = "rgba(10, 76, 87, 0.08)";
+    tofContext.fillRect(layout.splitterX, layout.upperY - 16, layout.reflectronDetectorX - layout.splitterX, 32);
+    tofContext.strokeRect(layout.splitterX, layout.upperY - 16, layout.reflectronDetectorX - layout.splitterX, 32);
+
+    tofContext.fillStyle = "rgba(217, 115, 13, 0.12)";
+    tofContext.fillRect(layout.splitterX, layout.upperY - 52, layout.reflectorEndX - layout.splitterX, layout.lowerY - layout.upperY + 104);
+    tofContext.strokeStyle = "rgba(217, 115, 13, 0.46)";
+    tofContext.strokeRect(layout.splitterX, layout.upperY - 52, layout.reflectorEndX - layout.splitterX, layout.lowerY - layout.upperY + 104);
   }
-  tofContext.stroke();
 
   tofContext.fillStyle = "rgba(24, 36, 45, 0.78)";
   tofContext.font = '500 12px "IBM Plex Mono", monospace';
-  tofContext.fillText("source", layout.sourceX - 18, layout.lowerY - 34);
-  tofContext.fillText("accelerate", layout.accelStartX + 2, layout.lowerY - 34);
-  tofContext.fillText("drift", layout.accelEndX + 70, layout.lowerY - 34);
+  tofContext.fillText("source", layout.sourceX - 18, layout.lowerY - 40);
+  tofContext.fillText("accelerate", layout.accelStartX + 2, layout.lowerY - 40);
+  tofContext.fillText("drift", layout.accelEndX + 70, layout.lowerY - 40);
   if (mode === "reflectron") {
     tofContext.fillText("reflectron", layout.splitterX + 12, layout.upperY - 64);
-    tofContext.fillText("detector", layout.reflectronDetectorX - 42, layout.upperY - 18);
+    tofContext.fillText("detector", layout.reflectronDetectorX - 42, layout.upperY - 24);
   } else {
-    tofContext.fillText("detector", layout.linearDetectorX - 34, layout.lowerY - 34);
+    tofContext.fillText("detector", layout.linearDetectorX - 34, layout.lowerY - 40);
   }
 
   tofContext.strokeStyle = "rgba(24, 36, 45, 0.42)";
@@ -393,7 +406,7 @@ function drawArrivalTrace(width, height, elapsedSeconds) {
     tofContext.lineTo(x, Math.max(layout.traceTop + 8, Math.min(layout.traceBottom - 8, y)));
     tofContext.stroke();
 
-    if (elapsedSeconds >= ion.totalTime) {
+    if (elapsedSeconds >= ion.displayTime) {
       tofContext.fillStyle = `hsla(${ion.hue}, 92%, 48%, 0.92)`;
       tofContext.beginPath();
       tofContext.arc(x, layout.traceTop + 10, 3.8, 0, Math.PI * 2);
@@ -425,11 +438,14 @@ function drawTofFrame(now) {
     const position = mode === "reflectron"
       ? positionReflectronIon(ion, elapsedSeconds, layout)
       : positionLinearIon(ion, elapsedSeconds, layout);
-    const alpha = elapsedSeconds >= ion.totalTime ? 0.35 : 0.94;
+    const alpha = elapsedSeconds >= ion.displayTime ? 0.35 : 0.94;
     tofContext.fillStyle = `hsla(${ion.hue}, 92%, 56%, ${alpha})`;
+    tofContext.shadowColor = `hsla(${ion.hue}, 92%, 56%, 0.42)`;
+    tofContext.shadowBlur = 10;
     tofContext.beginPath();
-    tofContext.arc(position.x, position.y, 4.6, 0, Math.PI * 2);
+    tofContext.arc(position.x, position.y, 6.2, 0, Math.PI * 2);
     tofContext.fill();
+    tofContext.shadowBlur = 0;
   });
 
   drawTofLegend(width);
