@@ -39,7 +39,7 @@
       <section class="panel controls-panel">
         <div class="panel-heading">
           <h2>Animation Inputs</h2>
-          <p>Three mass groups are launched together with a controlled kinetic-energy spread so you can compare temporal dispersion in linear and reflectron modes.</p>
+          <p>Three mass groups are launched together with a Gaussian kinetic-energy spread so you can compare temporal dispersion in linear and reflectron modes.</p>
         </div>
 
         <label class="field">
@@ -107,7 +107,7 @@
       <section class="panel plot-panel">
         <div class="panel-heading">
           <h2>Instrument View</h2>
-          <p>Lower lane shows the outgoing packet. In reflectron mode, ions enter the ion mirror at the far end, reverse, and travel back to a detector on the return path.</p>
+          <p>The upper lane shows the outgoing packet. In reflectron mode, ions enter the ion mirror at the far end, reverse, and travel back on a lower return path into the detector.</p>
         </div>
         <div class="tof-stage">
           <canvas id="tof-canvas" class="tof-canvas" width="1100" height="680" aria-label="Time-of-flight mass analyzer animation"></canvas>
@@ -118,7 +118,7 @@
     <section class="panel table-panel">
       <div class="panel-heading">
         <h2>Flight Times</h2>
-        <p>The packet width comes from the chosen kinetic-energy spread. Reflectron mode adds mirror time so faster ions penetrate deeper before turning and can be refocused near the center energy.</p>
+        <p>The packet width comes from the Gaussian kinetic-energy spread. Reflectron mode adds mirror time so faster ions penetrate deeper before turning and can be refocused near the center energy.</p>
       </div>
       <div class="table-wrap">
         <table>
