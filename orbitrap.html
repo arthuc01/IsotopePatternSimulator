@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Orbitrap Ion Trap Animation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css?v=20260409a">
+  <script src="orbitrap.js?v=20260409a" defer></script>
+</head>
+<body>
+  <div class="page-shell">
+    <nav class="page-nav" aria-label="Site">
+      <a class="nav-link" href="index.html">Simulator</a>
+      <a class="nav-link nav-link-active" href="orbitrap.html">Orbitrap Animation</a>
+    </nav>
+
+    <header class="hero orbitrap-hero">
+      <div>
+        <p class="eyebrow">Arthur Group : University of Bristol School of Chemistry Mass Spectrometry</p>
+        <h1>Orbitrap Ion Trap</h1>
+        <p class="hero-copy">
+          Animated conceptual view of ions orbiting the central spindle electrode while oscillating along the trap axis.
+        </p>
+      </div>
+      <div class="hero-card">
+        <p class="hero-card-label">Controls</p>
+        <div class="chip-row">
+          <button id="orbitrap-toggle" class="chip" type="button">Pause</button>
+          <button id="orbitrap-reset" class="chip" type="button">Reset</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="app-grid orbitrap-grid">
+      <section class="panel controls-panel">
+        <div class="panel-heading">
+          <h2>Animation Inputs</h2>
+          <p>These controls change the visualized trajectories, not the isotope model.</p>
+        </div>
+
+        <label class="field">
+          <span>Ion Count</span>
+          <input id="ion-count-input" type="range" min="6" max="48" step="1" value="18">
+          <output id="ion-count-output" for="ion-count-input">18</output>
+        </label>
+
+        <label class="field">
+          <span>Orbital Speed</span>
+          <input id="orbital-speed-input" type="range" min="0.2" max="2.4" step="0.1" value="1.1">
+          <output id="orbital-speed-output" for="orbital-speed-input">1.1x</output>
+        </label>
+
+        <label class="field">
+          <span>Axial Oscillation</span>
+          <input id="axial-amplitude-input" type="range" min="0.1" max="1.2" step="0.05" value="0.7">
+          <output id="axial-amplitude-output" for="axial-amplitude-input">0.70</output>
+        </label>
+
+        <label class="field">
+          <span>Trail Length</span>
+          <input id="trail-length-input" type="range" min="12" max="90" step="1" value="40">
+          <output id="trail-length-output" for="trail-length-input">40</output>
+        </label>
+
+        <div class="summary-grid">
+          <div class="summary-card">
+            <span class="summary-label">Mode</span>
+            <strong>Conceptual</strong>
+          </div>
+          <div class="summary-card">
+            <span class="summary-label">Electrodes</span>
+            <strong>Outer barrel + spindle</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel plot-panel">
+        <div class="panel-heading">
+          <h2>Trap View</h2>
+          <p>Illustrative animation only. Dragging is not required here; the scene updates continuously.</p>
+        </div>
+        <div class="orbitrap-stage">
+          <canvas id="orbitrap-canvas" class="orbitrap-canvas" width="1100" height="680" aria-label="Orbitrap ion trap animation"></canvas>
+          <div class="orbitrap-overlay">
+            <span>z</span>
+            <span>r</span>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

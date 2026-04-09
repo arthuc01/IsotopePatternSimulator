@@ -45,6 +45,32 @@ body::before {
   padding: 32px 0 48px;
 }
 
+.page-nav {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.nav-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: rgba(24, 36, 45, 0.06);
+  color: var(--ink);
+  text-decoration: none;
+  transition: transform 150ms ease, background 150ms ease, color 150ms ease;
+}
+
+.nav-link:hover {
+  transform: translateY(-1px);
+}
+
+.nav-link-active {
+  background: var(--accent);
+  color: #f8fbfb;
+}
+
 .hero {
   display: grid;
   grid-template-columns: 1.3fr 0.9fr;
@@ -361,6 +387,37 @@ output {
   margin-bottom: 14px;
 }
 
+.orbitrap-grid {
+  align-items: start;
+}
+
+.orbitrap-stage {
+  position: relative;
+  width: 100%;
+  min-height: min(680px, calc(100vh - 220px));
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(24, 36, 45, 0.08);
+  background:
+    radial-gradient(circle at 50% 45%, rgba(255, 255, 255, 0.84), rgba(229, 241, 244, 0.72)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(239, 247, 248, 0.9));
+}
+
+.orbitrap-canvas {
+  display: block;
+  width: 100%;
+  height: min(680px, calc(100vh - 220px));
+}
+
+.orbitrap-overlay {
+  position: absolute;
+  inset: 18px 18px auto auto;
+  display: flex;
+  gap: 8px;
+  font: 500 0.88rem "IBM Plex Mono", monospace;
+  color: rgba(10, 76, 87, 0.7);
+}
+
 .table-wrap {
   overflow: auto;
 }
@@ -408,6 +465,10 @@ code {
     padding-top: 20px;
   }
 
+  .page-nav {
+    flex-wrap: wrap;
+  }
+
   .panel,
   .hero-card {
     padding: 18px;
@@ -433,5 +494,11 @@ code {
   .compact-field {
     max-width: none;
     width: 100%;
+  }
+
+  .orbitrap-stage,
+  .orbitrap-canvas {
+    min-height: min(520px, calc(100vh - 180px));
+    height: min(520px, calc(100vh - 180px));
   }
 }
