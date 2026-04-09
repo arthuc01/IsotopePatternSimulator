@@ -81,14 +81,20 @@ function inverseNormalCDF(probability) {
     / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
 }
 
-function createGaussianEnergyOffsets(spreadFraction, count) {
+function createGaussianEnergyProfile(spreadFraction, count) {
   if (count <= 1) {
-    return [0];
+    return [{ offset: 0, weight: 1, zScore: 0 }];
   }
 
   const quantiles = Array.from({ length: count }, (_, index) => inverseNormalCDF((index + 0.5) / count));
   const maxAbs = Math.max(...quantiles.map((value) => Math.abs(value)));
-  return quantiles.map((value) => (value / Math.max(maxAbs, 1e-9)) * spreadFraction);
+  const weights = quantiles.map((value) => Math.exp(-0.5 * value * value));
+  const weightSum = weights.reduce((sum, value) => sum + value, 0);
+  return quantiles.map((value, index) => ({
+    offset: (value / Math.max(maxAbs, 1e-9)) * spreadFraction,
+    weight: weights[index] / Math.max(weightSum, 1e-9),
+    zScore: value
+  }));
 }
 
 function clampMass(value, fallback) {
@@ -184,13 +190,13 @@ function createTofPacket() {
   const spreadFraction = Number(tofControls.spread.value) / 100;
   const voltageKV = Number(tofControls.voltage.value);
   const focusFactor = Number(tofControls.focus.value);
-  const energyOffsets = createGaussianEnergyOffsets(spreadFraction, tofPhysics.packetParticles);
+  const energyProfile = createGaussianEnergyProfile(spreadFraction, tofPhysics.packetParticles);
 
   tofState.packet = [];
   let maxPhysicalAcceleration = 0;
   tofState.stats = masses.map((band) => {
-    const ions = energyOffsets.map((offset, index) => {
-      const energyFactor = 1 + offset;
+    const ions = energyProfile.map((packetSlice, index) => {
+      const energyFactor = 1 + packetSlice.offset;
       const base = mode === "reflectron"
         ? computeReflectronTerms(band.mass, voltageKV, energyFactor, focusFactor)
         : computeLinearTerms(band.mass, voltageKV, energyFactor);
@@ -200,6 +206,7 @@ function createTofPacket() {
         hue: band.hue,
         mass: band.mass,
         energyFactor,
+        packetWeight: packetSlice.weight,
         totalTime: base.totalTime,
         displayTime: 0,
         displayAccelerationTime: 0,
@@ -212,8 +219,13 @@ function createTofPacket() {
     });
 
     ions.sort((left, right) => left.totalTime - right.totalTime);
-    const mean = ions.reduce((sum, ion) => sum + ion.totalTime, 0) / ions.length;
-    const width = ions[ions.length - 1].totalTime - ions[0].totalTime;
+    const totalWeight = ions.reduce((sum, ion) => sum + ion.packetWeight, 0);
+    const mean = ions.reduce((sum, ion) => sum + ion.totalTime * ion.packetWeight, 0) / Math.max(totalWeight, 1e-9);
+    const variance = ions.reduce((sum, ion) => {
+      const delta = ion.totalTime - mean;
+      return sum + (delta * delta * ion.packetWeight);
+    }, 0) / Math.max(totalWeight, 1e-9);
+    const width = 2.355 * Math.sqrt(Math.max(variance, 0));
     return {
       label: band.label,
       hue: band.hue,
@@ -275,9 +287,25 @@ function getTofLayout(width, height) {
     linearDetectorX: width * 0.88,
     reflectronDetectorX: width * 0.40,
     outboundY: analyzerCenterY - analyzerGap * 0.18,
-    returnY: analyzerCenterY + analyzerGap * 0.30,
+    returnY: analyzerCenterY + analyzerGap * 0.32,
+    returnMergeY: analyzerCenterY + analyzerGap * 0.12,
     traceTop: height * 0.76,
     traceBottom: height * 0.93
+  };
+}
+
+function interpolatePoint(start, end, progress) {
+  return {
+    x: start.x + (end.x - start.x) * progress,
+    y: start.y + (end.y - start.y) * progress
+  };
+}
+
+function quadraticBezierPoint(start, control, end, progress) {
+  const oneMinus = 1 - progress;
+  return {
+    x: (oneMinus * oneMinus * start.x) + (2 * oneMinus * progress * control.x) + (progress * progress * end.x),
+    y: (oneMinus * oneMinus * start.y) + (2 * oneMinus * progress * control.y) + (progress * progress * end.y)
   };
 }
 
@@ -314,6 +342,13 @@ function positionReflectronIon(ion, elapsedSeconds, layout) {
     entryX + (layout.reflectorEndX - entryX) * Math.min(ion.penetration / (tofPhysics.reflectronLowerDriftLength * 0.42), 1),
     layout.reflectorEndX - 4
   );
+  const mirrorExit = { x: entryX, y: layout.returnMergeY };
+  const detectorPoint = { x: detectorX, y: layout.returnY };
+  const turnPoint = { x: turnaroundDepth, y: layout.outboundY };
+  const mirrorControl = {
+    x: layout.reflectorEndX + (layout.reflectorEndX - entryX) * 0.08,
+    y: layout.outboundY + (layout.returnMergeY - layout.outboundY) * 0.52
+  };
 
   if (effective <= tAcceleration) {
     const progress = effective / Math.max(tAcceleration, 1e-9);
@@ -334,24 +369,16 @@ function positionReflectronIon(ion, elapsedSeconds, layout) {
 
   if (effective <= tAcceleration + tLower + tPenetration) {
     const progress = (effective - tAcceleration - tLower) / Math.max(tPenetration, 1e-9);
-    return {
-      x: entryX + (turnaroundDepth - entryX) * progress,
-      y: layout.outboundY
-    };
+    return interpolatePoint({ x: entryX, y: layout.outboundY }, turnPoint, progress);
   }
 
   if (effective <= tAcceleration + tLower + 2 * tPenetration) {
     const progress = (effective - tAcceleration - tLower - tPenetration) / Math.max(tPenetration, 1e-9);
-    const x = turnaroundDepth + (entryX - turnaroundDepth) * progress;
-    const y = layout.outboundY + (layout.returnY - layout.outboundY) * Math.sin(progress * Math.PI * 0.5);
-    return { x, y };
+    return quadraticBezierPoint(turnPoint, mirrorControl, mirrorExit, progress);
   }
 
   const progress = (effective - tAcceleration - tLower - 2 * tPenetration) / Math.max(tUpper, 1e-9);
-  return {
-    x: entryX + (detectorX - entryX) * Math.min(progress, 1),
-    y: layout.returnY
-  };
+  return interpolatePoint(mirrorExit, detectorPoint, Math.min(progress, 1));
 }
 
 function drawTofBackground(width, height, layout, mode) {
@@ -361,8 +388,9 @@ function drawTofBackground(width, height, layout, mode) {
   tofContext.fillStyle = gradient;
   tofContext.fillRect(0, 0, width, height);
 
+  const reflectronTopEndX = mode === "reflectron" ? layout.mirrorFrontX : layout.linearDetectorX;
   tofContext.fillStyle = "rgba(10, 76, 87, 0.08)";
-  tofContext.fillRect(layout.sourceX, layout.outboundY - 16, layout.linearDetectorX - layout.sourceX, 32);
+  tofContext.fillRect(layout.sourceX, layout.outboundY - 16, reflectronTopEndX - layout.sourceX, 32);
   tofContext.fillStyle = "rgba(13, 108, 116, 0.12)";
   tofContext.fillRect(layout.accelStartX, layout.outboundY - 30, layout.accelEndX - layout.accelStartX, 60);
 
@@ -371,17 +399,24 @@ function drawTofBackground(width, height, layout, mode) {
   tofContext.setLineDash([6, 6]);
   tofContext.beginPath();
   tofContext.moveTo(layout.sourceX, layout.outboundY);
-  tofContext.lineTo(layout.linearDetectorX, layout.outboundY);
+  tofContext.lineTo(reflectronTopEndX, layout.outboundY);
   tofContext.stroke();
   tofContext.setLineDash([]);
 
   tofContext.strokeStyle = "rgba(10, 76, 87, 0.50)";
   tofContext.lineWidth = 3;
-  tofContext.strokeRect(layout.sourceX, layout.outboundY - 16, layout.linearDetectorX - layout.sourceX, 32);
+  tofContext.strokeRect(layout.sourceX, layout.outboundY - 16, reflectronTopEndX - layout.sourceX, 32);
   if (mode === "reflectron") {
     tofContext.fillStyle = "rgba(10, 76, 87, 0.08)";
-    tofContext.fillRect(layout.reflectronDetectorX, layout.returnY - 16, layout.mirrorFrontX - layout.reflectronDetectorX, 32);
-    tofContext.strokeRect(layout.reflectronDetectorX, layout.returnY - 16, layout.mirrorFrontX - layout.reflectronDetectorX, 32);
+    tofContext.beginPath();
+    tofContext.moveTo(layout.reflectronDetectorX, layout.returnY - 16);
+    tofContext.lineTo(layout.mirrorFrontX, layout.returnMergeY - 16);
+    tofContext.lineTo(layout.mirrorFrontX, layout.returnMergeY + 16);
+    tofContext.lineTo(layout.reflectronDetectorX, layout.returnY + 16);
+    tofContext.closePath();
+    tofContext.fill();
+    tofContext.strokeStyle = "rgba(10, 76, 87, 0.50)";
+    tofContext.stroke();
 
     tofContext.fillStyle = "rgba(217, 115, 13, 0.12)";
     tofContext.fillRect(layout.mirrorFrontX, layout.outboundY - 52, layout.reflectorEndX - layout.mirrorFrontX, layout.returnY - layout.outboundY + 104);
@@ -392,14 +427,19 @@ function drawTofBackground(width, height, layout, mode) {
     tofContext.lineWidth = 2;
     tofContext.beginPath();
     tofContext.moveTo(layout.mirrorFrontX, layout.outboundY);
-    tofContext.lineTo(layout.mirrorFrontX, layout.returnY);
+    tofContext.lineTo(layout.mirrorFrontX, layout.returnMergeY);
     tofContext.stroke();
 
-    tofContext.setLineDash([10, 8]);
-    tofContext.beginPath();
-    tofContext.moveTo(layout.mirrorFrontX + 6, layout.outboundY - 48);
-    tofContext.lineTo(layout.mirrorFrontX + 18, layout.returnY + 48);
-    tofContext.stroke();
+    tofContext.strokeStyle = "rgba(24, 36, 45, 0.60)";
+    tofContext.lineWidth = 1.8;
+    tofContext.setLineDash([10, 12]);
+    for (let index = 0; index < 5; index += 1) {
+      const x = layout.mirrorFrontX + 22 + index * ((layout.reflectorEndX - layout.mirrorFrontX - 36) / 4);
+      tofContext.beginPath();
+      tofContext.moveTo(x - 6, layout.outboundY - 42);
+      tofContext.lineTo(x + 6, layout.returnY + 42);
+      tofContext.stroke();
+    }
     tofContext.setLineDash([]);
   }
 
@@ -411,6 +451,7 @@ function drawTofBackground(width, height, layout, mode) {
   if (mode === "reflectron") {
     tofContext.fillText("reflectron", layout.mirrorFrontX + 12, layout.outboundY - 64);
     tofContext.fillText("detector", layout.reflectronDetectorX - 24, layout.returnY + 40);
+    tofContext.fillText("return drift", layout.reflectronDetectorX + 18, layout.returnY - 26);
   } else {
     tofContext.fillText("detector", layout.linearDetectorX - 34, layout.outboundY - 40);
   }
@@ -466,26 +507,48 @@ function drawArrivalTrace(width, height, elapsedSeconds) {
   tofContext.fillText("arrival time axis", left, layout.traceTop - 10);
 
   const maxTime = Math.max(...tofState.packet.map((ion) => ion.totalTime));
-  const minEnergy = Math.min(...tofState.packet.map((ion) => ion.energyFactor));
-  const maxEnergy = Math.max(...tofState.packet.map((ion) => ion.energyFactor));
-  const energySpan = Math.max(maxEnergy - minEnergy, 1e-6);
-  tofState.packet.forEach((ion) => {
-    const x = left + (ion.totalTime / maxTime) * (right - left);
-    const normalizedEnergy = (ion.energyFactor - minEnergy) / energySpan;
-    const y = layout.traceBottom - normalizedEnergy * traceHeight;
-    if (elapsedSeconds >= ion.displayTime) {
-      tofContext.strokeStyle = `hsla(${ion.hue}, 92%, 50%, 0.55)`;
-      tofContext.lineWidth = 2;
-      tofContext.beginPath();
-      tofContext.moveTo(x, layout.traceBottom);
-      tofContext.lineTo(x, Math.max(layout.traceTop + 8, Math.min(layout.traceBottom - 8, y)));
-      tofContext.stroke();
+  const masses = getMasses();
+  const samples = 160;
+  const kernelWidth = Math.max(maxTime * 0.012, 1e-7);
 
-      tofContext.fillStyle = `hsla(${ion.hue}, 92%, 48%, 0.92)`;
+  masses.forEach((massBand) => {
+    const ions = tofState.packet.filter((ion) => ion.label === massBand.label);
+    const profile = Array.from({ length: samples }, (_, index) => {
+      const time = (index / (samples - 1)) * maxTime;
+      const intensity = ions.reduce((sum, ion) => {
+        const activation = elapsedSeconds >= ion.displayTime ? 1 : 0;
+        if (!activation) {
+          return sum;
+        }
+        const delta = time - ion.totalTime;
+        return sum + ion.packetWeight * Math.exp(-0.5 * (delta / kernelWidth) ** 2);
+      }, 0);
+      return { time, intensity };
+    });
+
+    const peak = Math.max(...profile.map((point) => point.intensity), 1e-9);
+    tofContext.strokeStyle = `hsla(${massBand.hue}, 92%, 50%, 0.92)`;
+    tofContext.lineWidth = 2.2;
+    tofContext.beginPath();
+    profile.forEach((point, index) => {
+      const x = left + (point.time / maxTime) * (right - left);
+      const y = layout.traceBottom - (point.intensity / peak) * (traceHeight - 10);
+      if (index === 0) {
+        tofContext.moveTo(x, y);
+      } else {
+        tofContext.lineTo(x, y);
+      }
+    });
+    tofContext.stroke();
+
+    const arrivedIons = ions.filter((ion) => elapsedSeconds >= ion.displayTime);
+    arrivedIons.forEach((ion) => {
+      const x = left + (ion.totalTime / maxTime) * (right - left);
+      tofContext.fillStyle = `hsla(${ion.hue}, 92%, 48%, ${0.3 + ion.packetWeight * 2.8})`;
       tofContext.beginPath();
-      tofContext.arc(x, layout.traceTop + 10, 3.8, 0, Math.PI * 2);
+      tofContext.arc(x, layout.traceBottom - 4, 2.4 + ion.packetWeight * 18, 0, Math.PI * 2);
       tofContext.fill();
-    }
+    });
   });
 }
 
@@ -513,11 +576,12 @@ function drawTofFrame(now) {
       ? positionReflectronIon(ion, elapsedSeconds, layout)
       : positionLinearIon(ion, elapsedSeconds, layout);
     const alpha = elapsedSeconds >= ion.displayTime ? 0.35 : 0.94;
-    tofContext.fillStyle = `hsla(${ion.hue}, 92%, 56%, ${alpha})`;
-    tofContext.shadowColor = `hsla(${ion.hue}, 92%, 56%, 0.42)`;
+    const radius = 4 + ion.packetWeight * 22;
+    tofContext.fillStyle = `hsla(${ion.hue}, 92%, 56%, ${Math.min(1, alpha * (0.6 + ion.packetWeight * 5))})`;
+    tofContext.shadowColor = `hsla(${ion.hue}, 92%, 56%, ${0.2 + ion.packetWeight * 1.6})`;
     tofContext.shadowBlur = 10;
     tofContext.beginPath();
-    tofContext.arc(position.x, position.y, 6.2, 0, Math.PI * 2);
+    tofContext.arc(position.x, position.y, radius, 0, Math.PI * 2);
     tofContext.fill();
     tofContext.shadowBlur = 0;
   });
