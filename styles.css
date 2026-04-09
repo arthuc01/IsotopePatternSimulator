@@ -468,6 +468,28 @@ output {
   color: rgba(10, 76, 87, 0.7);
 }
 
+.tof-grid {
+  align-items: start;
+}
+
+.tof-stage {
+  position: relative;
+  width: 100%;
+  min-height: min(680px, calc(100vh - 220px));
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(24, 36, 45, 0.08);
+  background:
+    radial-gradient(circle at 50% 40%, rgba(255, 255, 255, 0.86), rgba(233, 242, 244, 0.74)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(237, 244, 247, 0.88));
+}
+
+.tof-canvas {
+  display: block;
+  width: 100%;
+  height: min(680px, calc(100vh - 220px));
+}
+
 .table-wrap {
   overflow: auto;
 }
@@ -551,7 +573,9 @@ code {
   }
 
   .orbitrap-stage,
-  .orbitrap-canvas {
+  .orbitrap-canvas,
+  .tof-stage,
+  .tof-canvas {
     min-height: min(520px, calc(100vh - 180px));
     height: min(520px, calc(100vh - 180px));
   }

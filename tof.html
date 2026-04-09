@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TOF Mass Analyzer Animation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css?v=20260409f">
+  <script src="tof.js?v=20260409f" defer></script>
+</head>
+<body>
+  <div class="page-shell">
+    <nav class="page-nav" aria-label="Site">
+      <a class="nav-link" href="index.html">Simulator</a>
+      <a class="nav-link" href="orbitrap.html">Orbitrap Animation</a>
+      <a class="nav-link nav-link-active" href="tof.html">TOF Animation</a>
+    </nav>
+
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Arthur Group : University of Bristol School of Chemistry Mass Spectrometry</p>
+        <h1>Time-of-Flight Analyzer</h1>
+        <p class="hero-copy">
+          Teaching animation for linear and reflectron TOF behavior, based on the flight-time relations discussed by Boesl (Mass Spectrometry Reviews, 2016).
+        </p>
+      </div>
+      <div class="hero-card">
+        <p class="hero-card-label">Teaching Focus</p>
+        <div class="chip-row">
+          <button id="tof-toggle" class="chip" type="button">Pause</button>
+          <button id="tof-reset" class="chip" type="button">Replay Packet</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="app-grid tof-grid">
+      <section class="panel controls-panel">
+        <div class="panel-heading">
+          <h2>Animation Inputs</h2>
+          <p>Three mass groups are launched together with a controlled kinetic-energy spread so you can compare temporal dispersion in linear and reflectron modes.</p>
+        </div>
+
+        <label class="field">
+          <span>Analyzer Mode</span>
+          <select id="tof-mode-input">
+            <option value="linear">Linear TOF</option>
+            <option value="reflectron">Reflectron TOF</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Acceleration Voltage</span>
+          <input id="tof-voltage-input" type="range" min="2" max="20" step="0.5" value="8">
+          <output id="tof-voltage-output" for="tof-voltage-input">8.0 kV</output>
+        </label>
+
+        <label class="field">
+          <span>Energy Spread</span>
+          <input id="tof-spread-input" type="range" min="0" max="12" step="0.5" value="6">
+          <output id="tof-spread-output" for="tof-spread-input">6.0%</output>
+        </label>
+
+        <label class="field">
+          <span>Animation Speed</span>
+          <input id="tof-speed-input" type="range" min="0.4" max="2.4" step="0.1" value="1">
+          <output id="tof-speed-output" for="tof-speed-input">1.0x</output>
+        </label>
+
+        <label class="field">
+          <span>Reflectron Focus</span>
+          <input id="tof-focus-input" type="range" min="0.7" max="1.3" step="0.02" value="1">
+          <output id="tof-focus-output" for="tof-focus-input">1.00x</output>
+        </label>
+
+        <div class="field">
+          <span>Mass Groups</span>
+          <div class="mass-input-grid">
+            <label class="mass-field">
+              <span class="mass-chip mass-chip-light">Light</span>
+              <input id="tof-mass-light-input" type="number" min="20" max="6000" step="1" value="150">
+            </label>
+            <label class="mass-field">
+              <span class="mass-chip mass-chip-mid">Mid</span>
+              <input id="tof-mass-mid-input" type="number" min="20" max="6000" step="1" value="500">
+            </label>
+            <label class="mass-field">
+              <span class="mass-chip mass-chip-heavy">Heavy</span>
+              <input id="tof-mass-heavy-input" type="number" min="20" max="6000" step="1" value="1200">
+            </label>
+          </div>
+        </div>
+
+        <div class="summary-grid">
+          <div class="summary-card">
+            <span class="summary-label">Physics View</span>
+            <strong id="tof-mode-summary">t ∝ sqrt(m/z) in field-free drift</strong>
+          </div>
+          <div class="summary-card">
+            <span class="summary-label">Reflectron Effect</span>
+            <strong id="tof-focus-summary">Faster ions penetrate deeper before turning</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel plot-panel">
+        <div class="panel-heading">
+          <h2>Instrument View</h2>
+          <p>Lower lane shows the outgoing packet. In reflectron mode, ions reverse in the electrostatic mirror and are directed to the upper detector path.</p>
+        </div>
+        <div class="tof-stage">
+          <canvas id="tof-canvas" class="tof-canvas" width="1100" height="680" aria-label="Time-of-flight mass analyzer animation"></canvas>
+        </div>
+      </section>
+    </main>
+
+    <section class="panel table-panel">
+      <div class="panel-heading">
+        <h2>Flight Times</h2>
+        <p>The packet width comes from the chosen kinetic-energy spread. Reflectron mode is tuned to compress that spread near the center energy.</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Mass Group</th>
+              <th>m/z</th>
+              <th>Mean TOF</th>
+              <th>Packet Width</th>
+              <th>Relative Separation</th>
+            </tr>
+          </thead>
+          <tbody id="tof-table-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</body>
+</html>
