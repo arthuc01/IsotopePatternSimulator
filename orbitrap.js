@@ -14,6 +14,13 @@ const controls = {
   reset: document.getElementById("orbitrap-reset")
 };
 
+const trapModel = {
+  Rm: 1.0,
+  R1: 0.46,
+  R2: 1.12,
+  omegaZ: 1.0
+};
+
 const animationState = {
   running: true,
   time: 0,
@@ -38,85 +45,231 @@ function syncOutputs() {
   controls.trailLengthOutput.value = controls.trailLength.value;
 }
 
-function createIon(index) {
+function electrodeZ(r, radius) {
+  if (r <= 0 || r > radius) {
+    return 0;
+  }
+  const inside = (r * r - radius * radius) / 2 + (trapModel.Rm * trapModel.Rm * Math.log(radius / r));
+  return inside > 0 ? Math.sqrt(inside) : 0;
+}
+
+function equipotentialZ(r, equatorialRadius) {
+  if (r <= 0) {
+    return 0;
+  }
+  const inside = (r * r - equatorialRadius * equatorialRadius) / 2 + (trapModel.Rm * trapModel.Rm * Math.log(equatorialRadius / r));
+  return inside > 0 ? Math.sqrt(inside) : 0;
+}
+
+function omegaPhi(radius) {
+  return Math.sqrt(Math.max((trapModel.Rm * trapModel.Rm) / (radius * radius) - 1, 0) / 2);
+}
+
+function createIon(index, count) {
+  const baseRadius = 0.54 + 0.1 * ((index + 0.5) / Math.max(count, 1));
+  const stableRadius = Math.min(baseRadius, trapModel.Rm / Math.sqrt(2) - 0.03);
+  const perturbation = (Math.random() - 0.5) * 0.018;
+  const radius = stableRadius + perturbation;
+  const l = radius * radius * omegaPhi(radius);
+  const axialPhase = (Math.PI * 2 * index) / Math.max(count, 1);
   return {
-    phase: (Math.PI * 2 * index) / Number(controls.ionCount.value),
-    orbitRadius: 0.38 + Math.random() * 0.18,
-    ellipseScale: 0.35 + Math.random() * 0.28,
-    axialPhase: Math.random() * Math.PI * 2,
-    axialFrequency: 0.7 + Math.random() * 0.55,
-    hue: 182 + Math.random() * 28
+    r: radius,
+    rDot: (Math.random() - 0.5) * 0.015,
+    theta: (Math.PI * 2 * index) / Math.max(count, 1),
+    angularMomentum: l,
+    zAmplitude: 0.22 * Number(controls.axialAmplitude.value) * (0.88 + Math.random() * 0.24),
+    axialPhase,
+    hue: 186 + Math.random() * 24,
+    referenceRadius: radius
   };
 }
 
 function resetIons() {
-  animationState.ions = Array.from({ length: Number(controls.ionCount.value) }, (_, index) => createIon(index));
+  const count = Number(controls.ionCount.value);
+  animationState.ions = Array.from({ length: count }, (_, index) => createIon(index, count));
   animationState.time = 0;
 }
 
-function drawTrap(width, height) {
-  const cx = width / 2;
-  const cy = height / 2;
-  const outerW = width * 0.78;
-  const outerH = height * 0.74;
-  const innerW = width * 0.19;
-  const innerH = height * 0.58;
+function advanceIon(ion, dt) {
+  const radialForce = (ion.angularMomentum * ion.angularMomentum) / (ion.r * ion.r * ion.r) - 0.5 * ((trapModel.Rm * trapModel.Rm) / ion.r - ion.r);
+  ion.rDot += radialForce * dt;
+  ion.r += ion.rDot * dt;
+  ion.theta += (ion.angularMomentum / (ion.r * ion.r)) * dt;
+
+  if (!Number.isFinite(ion.r) || ion.r <= trapModel.R1 * 1.06 || ion.r >= trapModel.Rm * 0.985) {
+    const replacement = createIon(0, 1);
+    ion.r = replacement.r;
+    ion.rDot = replacement.rDot;
+    ion.theta = replacement.theta;
+    ion.angularMomentum = replacement.angularMomentum;
+    ion.zAmplitude = replacement.zAmplitude;
+    ion.referenceRadius = replacement.referenceRadius;
+  }
+}
+
+function sampleIonPosition(ion, timeOffset) {
+  const z = ion.zAmplitude * Math.cos(trapModel.omegaZ * timeOffset + ion.axialPhase);
+  const projectedR = ion.r * Math.cos(ion.theta);
+  return { z, projectedR };
+}
+
+function drawAxes(width, height, scale, origin) {
+  orbitrapContext.save();
+  orbitrapContext.strokeStyle = "rgba(24, 36, 45, 0.36)";
+  orbitrapContext.fillStyle = "rgba(24, 36, 45, 0.72)";
+  orbitrapContext.lineWidth = 1.5;
+
+  orbitrapContext.beginPath();
+  orbitrapContext.moveTo(origin.x - scale.zMax * scale.z, origin.y);
+  orbitrapContext.lineTo(origin.x + scale.zMax * scale.z, origin.y);
+  orbitrapContext.stroke();
+
+  orbitrapContext.beginPath();
+  orbitrapContext.moveTo(origin.x, origin.y + scale.rMax * scale.r);
+  orbitrapContext.lineTo(origin.x, origin.y - scale.rMax * scale.r);
+  orbitrapContext.stroke();
+
+  orbitrapContext.beginPath();
+  orbitrapContext.moveTo(origin.x + scale.zMax * scale.z, origin.y);
+  orbitrapContext.lineTo(origin.x + scale.zMax * scale.z - 10, origin.y - 4);
+  orbitrapContext.lineTo(origin.x + scale.zMax * scale.z - 10, origin.y + 4);
+  orbitrapContext.closePath();
+  orbitrapContext.fill();
+
+  orbitrapContext.beginPath();
+  orbitrapContext.moveTo(origin.x, origin.y - scale.rMax * scale.r);
+  orbitrapContext.lineTo(origin.x - 4, origin.y - scale.rMax * scale.r + 10);
+  orbitrapContext.lineTo(origin.x + 4, origin.y - scale.rMax * scale.r + 10);
+  orbitrapContext.closePath();
+  orbitrapContext.fill();
+
+  orbitrapContext.font = '500 14px "IBM Plex Mono", monospace';
+  orbitrapContext.fillText('z', origin.x + scale.zMax * scale.z - 18, origin.y - 10);
+  orbitrapContext.fillText('r', origin.x + 10, origin.y - scale.rMax * scale.r + 22);
+  orbitrapContext.restore();
+}
+
+function drawPathFromRFunction(radiusLimit, color, lineWidth, origin, scale) {
+  const samples = [];
+  const steps = 260;
+  for (let index = 1; index <= steps; index += 1) {
+    const r = (radiusLimit * index) / steps;
+    const z = electrodeZ(r, radiusLimit);
+    if (z > 0) {
+      samples.push({ r, z });
+    }
+  }
 
   orbitrapContext.save();
-  orbitrapContext.translate(cx, cy);
-
-  const shellGradient = orbitrapContext.createLinearGradient(-outerW / 2, 0, outerW / 2, 0);
-  shellGradient.addColorStop(0, "rgba(22, 48, 61, 0.15)");
-  shellGradient.addColorStop(0.5, "rgba(22, 48, 61, 0.05)");
-  shellGradient.addColorStop(1, "rgba(22, 48, 61, 0.15)");
-
+  orbitrapContext.strokeStyle = color;
+  orbitrapContext.lineWidth = lineWidth;
   orbitrapContext.beginPath();
-  orbitrapContext.ellipse(0, 0, outerW / 2, outerH / 2, 0, 0, Math.PI * 2);
-  orbitrapContext.fillStyle = shellGradient;
-  orbitrapContext.fill();
-  orbitrapContext.lineWidth = 5;
-  orbitrapContext.strokeStyle = "rgba(10, 76, 87, 0.35)";
+  samples.forEach((point, index) => {
+    const x = origin.x - point.z * scale.z;
+    const y = origin.y - point.r * scale.r;
+    if (index === 0) {
+      orbitrapContext.moveTo(x, y);
+    } else {
+      orbitrapContext.lineTo(x, y);
+    }
+  });
+  for (let index = samples.length - 1; index >= 0; index -= 1) {
+    const point = samples[index];
+    orbitrapContext.lineTo(origin.x + point.z * scale.z, origin.y - point.r * scale.r);
+  }
   orbitrapContext.stroke();
 
-  const spindleGradient = orbitrapContext.createLinearGradient(0, -innerH / 2, 0, innerH / 2);
-  spindleGradient.addColorStop(0, "rgba(217, 115, 13, 0.88)");
-  spindleGradient.addColorStop(0.5, "rgba(242, 162, 68, 0.98)");
-  spindleGradient.addColorStop(1, "rgba(217, 115, 13, 0.88)");
   orbitrapContext.beginPath();
-  orbitrapContext.ellipse(0, 0, innerW / 2, innerH / 2, 0, 0, Math.PI * 2);
-  orbitrapContext.fillStyle = spindleGradient;
-  orbitrapContext.fill();
-
-  orbitrapContext.setLineDash([8, 10]);
-  orbitrapContext.beginPath();
-  orbitrapContext.moveTo(-outerW * 0.42, 0);
-  orbitrapContext.lineTo(outerW * 0.42, 0);
-  orbitrapContext.strokeStyle = "rgba(10, 76, 87, 0.25)";
-  orbitrapContext.lineWidth = 2;
+  samples.forEach((point, index) => {
+    const x = origin.x - point.z * scale.z;
+    const y = origin.y + point.r * scale.r;
+    if (index === 0) {
+      orbitrapContext.moveTo(x, y);
+    } else {
+      orbitrapContext.lineTo(x, y);
+    }
+  });
+  for (let index = samples.length - 1; index >= 0; index -= 1) {
+    const point = samples[index];
+    orbitrapContext.lineTo(origin.x + point.z * scale.z, origin.y + point.r * scale.r);
+  }
   orbitrapContext.stroke();
-  orbitrapContext.setLineDash([]);
+  orbitrapContext.restore();
+}
+
+function drawEquipotentials(origin, scale) {
+  const levels = [0.56, 0.64, 0.75, 0.88, 0.98];
+  orbitrapContext.save();
+  orbitrapContext.strokeStyle = 'rgba(10, 76, 87, 0.20)';
+  orbitrapContext.lineWidth = 1.1;
+
+  levels.forEach((level) => {
+    const points = [];
+    for (let r = trapModel.R1 * 1.02; r <= Math.min(level, trapModel.R2); r += 0.004) {
+      const z = equipotentialZ(r, level);
+      if (z > 0) {
+        points.push({ r, z });
+      }
+    }
+    if (!points.length) {
+      return;
+    }
+
+    orbitrapContext.beginPath();
+    points.forEach((point, index) => {
+      const x = origin.x - point.z * scale.z;
+      const y = origin.y - point.r * scale.r;
+      if (index === 0) orbitrapContext.moveTo(x, y);
+      else orbitrapContext.lineTo(x, y);
+    });
+    for (let index = points.length - 1; index >= 0; index -= 1) {
+      const point = points[index];
+      orbitrapContext.lineTo(origin.x + point.z * scale.z, origin.y - point.r * scale.r);
+    }
+    orbitrapContext.stroke();
+
+    orbitrapContext.beginPath();
+    points.forEach((point, index) => {
+      const x = origin.x - point.z * scale.z;
+      const y = origin.y + point.r * scale.r;
+      if (index === 0) orbitrapContext.moveTo(x, y);
+      else orbitrapContext.lineTo(x, y);
+    });
+    for (let index = points.length - 1; index >= 0; index -= 1) {
+      const point = points[index];
+      orbitrapContext.lineTo(origin.x + point.z * scale.z, origin.y + point.r * scale.r);
+    }
+    orbitrapContext.stroke();
+  });
 
   orbitrapContext.restore();
 }
 
-function drawIons(width, height) {
-  const cx = width / 2;
-  const cy = height / 2;
-  const baseRadius = width * 0.29;
-  const verticalExtent = height * 0.25 * Number(controls.axialAmplitude.value);
-  const speed = Number(controls.orbitalSpeed.value);
-  const trailLength = Number(controls.trailLength.value);
+function drawElectrodes(origin, scale) {
+  orbitrapContext.save();
+  orbitrapContext.fillStyle = 'rgba(24, 36, 45, 0.08)';
+  drawPathFromRFunction(trapModel.R2, 'rgba(10, 76, 87, 0.42)', 4, origin, scale);
+  orbitrapContext.restore();
 
+  orbitrapContext.save();
+  orbitrapContext.strokeStyle = 'rgba(217, 115, 13, 0.95)';
+  orbitrapContext.lineWidth = 4;
+  drawPathFromRFunction(trapModel.R1, 'rgba(217, 115, 13, 0.95)', 4, origin, scale);
+  orbitrapContext.restore();
+}
+
+function drawIons(origin, scale) {
+  const trailLength = Number(controls.trailLength.value);
   animationState.ions.forEach((ion) => {
     for (let step = trailLength; step >= 0; step -= 1) {
-      const t = animationState.time - step * 0.018;
-      const angle = ion.phase + t * speed;
-      const x = cx + Math.cos(angle) * baseRadius * ion.orbitRadius;
-      const y = cy + Math.sin(angle * 0.9) * baseRadius * ion.ellipseScale + Math.sin(t * ion.axialFrequency + ion.axialPhase) * verticalExtent;
+      const t = animationState.time - step * 0.026;
+      const point = sampleIonPosition(ion, t);
+      const x = origin.x + point.z * scale.z;
+      const y = origin.y - point.projectedR * scale.r;
       const alpha = 1 - (step / (trailLength + 1));
       orbitrapContext.beginPath();
-      orbitrapContext.arc(x, y, step === 0 ? 5.2 : 2.2 + alpha * 2.4, 0, Math.PI * 2);
-      orbitrapContext.fillStyle = `hsla(${ion.hue}, 90%, 56%, ${0.08 + alpha * 0.72})`;
+      orbitrapContext.arc(x, y, step === 0 ? 4.6 : 1.8 + alpha * 2.0, 0, Math.PI * 2);
+      orbitrapContext.fillStyle = `hsla(${ion.hue}, 92%, 56%, ${0.08 + alpha * 0.78})`;
       orbitrapContext.fill();
     }
   });
@@ -127,39 +280,61 @@ function renderFrame(now) {
   const height = orbitrapCanvas.clientHeight;
   const delta = Math.min((now - animationState.lastFrame) / 1000, 0.05);
   animationState.lastFrame = now;
+  const speed = Number(controls.orbitalSpeed.value);
+
   if (animationState.running) {
-    animationState.time += delta;
+    animationState.time += delta * speed;
+    animationState.ions.forEach((ion) => advanceIon(ion, delta * speed));
   }
 
   orbitrapContext.clearRect(0, 0, width, height);
-
-  const bgGradient = orbitrapContext.createRadialGradient(width / 2, height / 2, 40, width / 2, height / 2, width * 0.46);
-  bgGradient.addColorStop(0, "rgba(255, 255, 255, 0.72)");
-  bgGradient.addColorStop(1, "rgba(216, 230, 240, 0.18)");
+  const bgGradient = orbitrapContext.createRadialGradient(width / 2, height / 2, 40, width / 2, height / 2, width * 0.48);
+  bgGradient.addColorStop(0, 'rgba(255, 255, 255, 0.82)');
+  bgGradient.addColorStop(1, 'rgba(216, 230, 240, 0.24)');
   orbitrapContext.fillStyle = bgGradient;
   orbitrapContext.fillRect(0, 0, width, height);
 
-  drawTrap(width, height);
-  drawIons(width, height);
+  const origin = { x: width / 2, y: height / 2 };
+  const zMax = Math.max(electrodeZ(trapModel.R1 * 0.08, trapModel.R1), electrodeZ(trapModel.R2 * 0.22, trapModel.R2), 1.25);
+  const rMax = trapModel.R2 * 1.08;
+  const scale = {
+    z: (width * 0.38) / zMax,
+    r: (height * 0.33) / rMax,
+    zMax,
+    rMax
+  };
+
+  drawAxes(width, height, scale, origin);
+  drawEquipotentials(origin, scale);
+  drawElectrodes(origin, scale);
+  drawIons(origin, scale);
+
+  orbitrapContext.fillStyle = 'rgba(24, 36, 45, 0.78)';
+  orbitrapContext.font = '500 13px "IBM Plex Mono", monospace';
+  orbitrapContext.fillText('U(r,z) = k/2 (z^2 - r^2/2) + k/2 Rm^2 ln(r/Rm)', 24, 28);
+  orbitrapContext.fillText('z(t) is harmonic; radial motion is numerically integrated from Eq. 3', 24, 48);
 
   requestAnimationFrame(renderFrame);
 }
 
-controls.ionCount.addEventListener("input", () => {
+controls.ionCount.addEventListener('input', () => {
   syncOutputs();
   resetIons();
 });
-controls.orbitalSpeed.addEventListener("input", syncOutputs);
-controls.axialAmplitude.addEventListener("input", syncOutputs);
-controls.trailLength.addEventListener("input", syncOutputs);
+controls.orbitalSpeed.addEventListener('input', syncOutputs);
+controls.axialAmplitude.addEventListener('input', () => {
+  syncOutputs();
+  resetIons();
+});
+controls.trailLength.addEventListener('input', syncOutputs);
 
-controls.toggle.addEventListener("click", () => {
+controls.toggle.addEventListener('click', () => {
   animationState.running = !animationState.running;
-  controls.toggle.textContent = animationState.running ? "Pause" : "Resume";
+  controls.toggle.textContent = animationState.running ? 'Pause' : 'Resume';
 });
 
-controls.reset.addEventListener("click", resetIons);
-window.addEventListener("resize", resizeCanvas);
+controls.reset.addEventListener('click', resetIons);
+window.addEventListener('resize', resizeCanvas);
 
 resizeCanvas();
 syncOutputs();

@@ -7,8 +7,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260409a">
-  <script src="orbitrap.js?v=20260409a" defer></script>
+  <link rel="stylesheet" href="styles.css?v=20260409b">
+  <script src="orbitrap.js?v=20260409b" defer></script>
 </head>
 <body>
   <div class="page-shell">
@@ -22,7 +22,7 @@
         <p class="eyebrow">Arthur Group : University of Bristol School of Chemistry Mass Spectrometry</p>
         <h1>Orbitrap Ion Trap</h1>
         <p class="hero-copy">
-          Animated conceptual view of ions orbiting the central spindle electrode while oscillating along the trap axis.
+          Paper-informed animation of ions orbiting the central spindle electrode in the quadro-logarithmic potential described by Makarov (Analytical Chemistry, 2000).
         </p>
       </div>
       <div class="hero-card">
@@ -38,7 +38,7 @@
       <section class="panel controls-panel">
         <div class="panel-heading">
           <h2>Animation Inputs</h2>
-          <p>These controls change the visualized trajectories, not the isotope model.</p>
+          <p>These controls change the visualized packet and time scale, while the trap shape follows the paper equations.</p>
         </div>
 
         <label class="field">
@@ -68,11 +68,11 @@
         <div class="summary-grid">
           <div class="summary-card">
             <span class="summary-label">Mode</span>
-            <strong>Conceptual</strong>
+            <strong>Makarov 2000-informed</strong>
           </div>
           <div class="summary-card">
-            <span class="summary-label">Electrodes</span>
-            <strong>Outer barrel + spindle</strong>
+            <span class="summary-label">Potential</span>
+            <strong>Quadro-logarithmic</strong>
           </div>
         </div>
       </section>
@@ -80,7 +80,7 @@
       <section class="panel plot-panel">
         <div class="panel-heading">
           <h2>Trap View</h2>
-          <p>Illustrative animation only. Dragging is not required here; the scene updates continuously.</p>
+          <p>Cross-section uses the electrode-shape relation from the paper, with harmonic axial motion and numerically integrated radial dynamics.</p>
         </div>
         <div class="orbitrap-stage">
           <canvas id="orbitrap-canvas" class="orbitrap-canvas" width="1100" height="680" aria-label="Orbitrap ion trap animation"></canvas>
