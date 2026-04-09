@@ -249,12 +249,36 @@ function monoisotopicMass(composition) {
 }
 
 function applyChargeToMass(mass, charge, polarity) {
+  if (polarity === "neutral" || charge === 0) {
+    return mass;
+  }
   const sign = polarity === "anion" ? 1 : -1;
   return (mass + (sign * charge * ELECTRON_MASS)) / charge;
 }
 
 function applyChargeToDistribution(peaks, charge, polarity) {
   return peaks.map((peak) => ({ mass: applyChargeToMass(peak.mass, charge, polarity), intensity: peak.intensity }));
+}
+
+function normalizeChargeState() {
+  const polarity = elements.polaritySelect.value;
+  if (polarity === "neutral") {
+    elements.chargeInput.value = "0";
+    elements.chargeInput.disabled = true;
+    return { charge: 0, polarity };
+  }
+
+  elements.chargeInput.disabled = false;
+  const charge = Math.max(1, Number(elements.chargeInput.value) || 1);
+  elements.chargeInput.value = String(charge);
+  return { charge, polarity };
+}
+
+function getPlotHeight() {
+  const rect = elements.plot.getBoundingClientRect();
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 900;
+  const available = viewportHeight - rect.top - 24;
+  return Math.max(320, Math.min(540, available));
 }
 
 function simulateGaussianProfile(peaks, resolvingPower, pointsPerFwhm) {
@@ -381,7 +405,8 @@ function renderPlot() {
   state.view = clampView(state.view || defaultViewRange());
   const visible = getVisibleData();
   const width = Math.max(elements.plot.clientWidth || 320, 320);
-  const height = 540;
+  const height = getPlotHeight();
+  elements.plot.style.setProperty("--plot-height", `${height}px`);
   const margin = { top: 20, right: 44, bottom: 44, left: 88 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
@@ -571,8 +596,7 @@ function simulate(resetView = true) {
   try {
     const formula = elements.formulaInput.value.trim();
     const composition = parseFormula(formula);
-    const charge = Math.max(1, Number(elements.chargeInput.value) || 1);
-    const polarity = elements.polaritySelect.value;
+    const { charge, polarity } = normalizeChargeState();
     const neutralPeaks = buildDistribution(composition);
     const peaks = applyChargeToDistribution(neutralPeaks, charge, polarity);
     const resolution = Number(elements.resolutionInput.value);
@@ -589,7 +613,8 @@ function simulate(resetView = true) {
     renderPlot();
     renderTable();
     updateSummary(composition, charge, polarity);
-    setStatus(`Simulated ${formula} as ${charge}${polarity === "cation" ? "+" : "-"} ion(s).`);
+    const ionLabel = polarity === "neutral" ? "neutral species" : `${charge}${polarity === "cation" ? "+" : "-"} ion(s)`;
+    setStatus(`Simulated ${formula} as ${ionLabel}.`);
   } catch (error) {
     state.peaks = [];
     state.profile = [];
@@ -636,6 +661,7 @@ function bindEvents() {
   elements.samplesInput.addEventListener("change", () => simulate(true));
   elements.chargeInput.addEventListener("change", () => simulate(true));
   elements.polaritySelect.addEventListener("change", () => simulate(true));
+  window.addEventListener("resize", renderPlot);
   elements.zoomIn.addEventListener("click", () => zoomPlot(0.7));
   elements.zoomOut.addEventListener("click", () => zoomPlot(1.4));
   elements.resetView.addEventListener("click", () => {
@@ -658,6 +684,7 @@ function bindEvents() {
 }
 
 bindEvents();
+normalizeChargeState();
 elements.resolutionOutput.value = elements.resolutionInput.value;
 elements.samplesOutput.value = `${elements.samplesInput.value} pts/FWHM`;
 renderPlot();

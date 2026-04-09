@@ -297,7 +297,8 @@ output {
 
 .plot-area {
   width: 100%;
-  min-height: 540px;
+  min-height: min(540px, calc(100vh - 220px));
+  height: var(--plot-height, 540px);
   position: relative;
   overflow: hidden;
   border-radius: 18px;
@@ -316,13 +317,13 @@ output {
 .plot-svg {
   display: block;
   width: 100%;
-  height: 540px;
+  height: var(--plot-height, 540px);
 }
 
 .plot-empty {
   display: grid;
   place-items: center;
-  height: 540px;
+  height: var(--plot-height, 540px);
   color: var(--muted);
 }
 
@@ -418,12 +419,7 @@ code {
   }
 
   .plot-area {
-    min-height: 420px;
-  }
-
-  .plot-svg,
-  .plot-empty {
-    height: 420px;
+    min-height: min(420px, calc(100vh - 180px));
   }
 
   .summary-grid {

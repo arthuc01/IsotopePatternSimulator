@@ -46,12 +46,13 @@
         <div class="field-group charge-group">
           <label class="field">
             <span>Charge</span>
-            <input id="charge-input" type="number" min="1" max="10" step="1" value="1">
+            <input id="charge-input" type="number" min="0" max="10" step="1" value="1">
           </label>
 
           <label class="field">
             <span>Ion Type</span>
             <select id="polarity-select">
+              <option value="neutral">Neutral</option>
               <option value="cation" selected>Cation</option>
               <option value="anion">Anion</option>
             </select>
@@ -61,7 +62,7 @@
         <div class="field-group">
           <label class="field">
             <span>Resolving Power</span>
-            <input id="resolution-input" type="range" min="1000" max="200000" step="1000" value="30000">
+            <input id="resolution-input" type="range" min="100" max="200000" step="100" value="30000">
             <output id="resolution-output" for="resolution-input">30000</output>
           </label>
 
