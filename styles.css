@@ -490,6 +490,88 @@ output {
   height: min(680px, calc(100vh - 220px));
 }
 
+.nmr-grid {
+  align-items: start;
+}
+
+.nmr-layers {
+  margin-bottom: 18px;
+  border: 1px solid rgba(24, 36, 45, 0.08);
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.nmr-layer-row {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr) minmax(0, 130px);
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(24, 36, 45, 0.08);
+}
+
+.nmr-layer-row:last-child {
+  border-bottom: 0;
+}
+
+.nmr-layer-head {
+  background: rgba(13, 108, 116, 0.08);
+  color: var(--accent-strong);
+  font: 500 0.82rem "IBM Plex Mono", monospace;
+}
+
+.nmr-layer-row span {
+  font-size: 0.88rem;
+}
+
+.nmr-layer-row select,
+.nmr-layer-row input[type="number"] {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+}
+
+.tree-area {
+  width: 100%;
+  min-height: 340px;
+  border-radius: 18px;
+  border: 1px solid rgba(24, 36, 45, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(239, 247, 248, 0.9));
+  overflow: hidden;
+}
+
+.tree-svg {
+  width: 100%;
+  height: 340px;
+  display: block;
+}
+
+.nmr-plot-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.nmr-subtitle {
+  margin: 0 0 6px;
+  font: 500 0.9rem "IBM Plex Mono", monospace;
+  color: var(--accent-strong);
+}
+
+.nmr-spectrum-area {
+  min-height: var(--nmr-spectrum-height, 280px);
+  height: var(--nmr-spectrum-height, 280px);
+}
+
+.tree-area {
+  min-height: var(--tree-height, 220px);
+  height: var(--tree-height, 220px);
+}
+
+.tree-svg {
+  height: var(--tree-height, 220px);
+}
+
 .table-wrap {
   overflow: auto;
 }
@@ -532,6 +614,10 @@ code {
 
   .mass-input-grid {
     grid-template-columns: 1fr;
+  }
+
+  .nmr-layer-row {
+    grid-template-columns: 46px minmax(0, 1fr) minmax(0, 112px);
   }
 }
 
