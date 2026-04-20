@@ -10,6 +10,7 @@ const NMRP = {
   cosySummary: document.getElementById("nmrp-cosy-summary"),
   noesySummary: document.getElementById("nmrp-noesy-summary"),
   structure: document.getElementById("nmrp-structure"),
+  structure3d: document.getElementById("nmrp-structure-3d"),
   spectrum: document.getElementById("nmrp-spectrum"),
   table: document.getElementById("nmrp-table-body"),
   protonTab: document.getElementById("nmrp-proton-tab"),
@@ -40,6 +41,7 @@ const HALIDE_SHIFT_RULES = {
 
 const state = {
   rdkit: null,
+  viewer3d: null,
   jsme: null,
   activeSpectrum: "proton",
   selectedSignalId: null,
@@ -1532,6 +1534,58 @@ function predictNoesy(graph, protonSignals, smiles = "") {
   return peaks.sort((a, b) => b.y - a.y || b.x - a.x);
 }
 
+function graphToXyz(graph, coordinates) {
+  const lines = [String(graph.atoms.length), "Teaching model for NMR predictor"];
+  graph.atoms.forEach((atom, index) => {
+    const point = coordinates[index] || { x: 0, y: 0, z: 0 };
+    lines.push(`${atom.element} ${point.x.toFixed(5)} ${point.y.toFixed(5)} ${point.z.toFixed(5)}`);
+  });
+  return lines.join("\n");
+}
+
+function selectedAtomIdsFromSignals() {
+  const selectedSignals = getSelectedSignals();
+  return dedupeSortedNumeric(selectedSignals.flatMap((signal) => signal.atomIds || []));
+}
+
+function tryRender3d(smiles) {
+  if (!NMRP.structure3d) return;
+  if (!window.$3Dmol) {
+    NMRP.structure3d.innerHTML = '<div class="plot-empty">3Dmol.js did not load. Check network access and refresh.</div>';
+    return;
+  }
+  if (!state.graph?.atoms?.length) {
+    NMRP.structure3d.innerHTML = '<div class="plot-empty">Predict a molecule to view a 3D model.</div>';
+    return;
+  }
+  if (!state.viewer3d) {
+    NMRP.structure3d.innerHTML = "";
+    state.viewer3d = window.$3Dmol.createViewer(NMRP.structure3d, {
+      backgroundColor: "white"
+    });
+  }
+  const viewer = state.viewer3d;
+  viewer.clear();
+  const coordinates = rdkitNoesyCoordinates(smiles, state.graph);
+  const xyz = graphToXyz(state.graph, coordinates);
+  viewer.addModel(xyz, "xyz");
+  viewer.setStyle({}, {
+    stick: { radius: 0.17, colorscheme: "Jmol" },
+    sphere: { scale: 0.30, colorscheme: "Jmol" }
+  });
+  const selectedAtomIds = selectedAtomIdsFromSignals();
+  if (selectedAtomIds.length) {
+    selectedAtomIds.forEach((atomId) => {
+      viewer.setStyle({ serial: atomId - 1 }, {
+        stick: { radius: 0.23, color: "#a11d37" },
+        sphere: { scale: 0.42, color: "#a11d37" }
+      });
+    });
+  }
+  viewer.zoomTo();
+  viewer.render();
+}
+
 function clampShift(ppm, nucleus) {
   if (nucleus === "13C") return Math.min(220, Math.max(0, ppm));
   return Math.min(13, Math.max(0, ppm));
@@ -2270,7 +2324,9 @@ function selectSignal(signalId) {
   state.selectedSignalId = signalId;
   state.selectedSignalIds = signalId ? [signalId] : [];
   if (state.graph) {
-    tryRenderRdkit(NMRP.smiles.value.trim());
+    const smiles = NMRP.smiles.value.trim();
+    tryRenderRdkit(smiles);
+    tryRender3d(smiles);
   }
   renderAssignments();
   renderActiveSpectrum();
@@ -2281,7 +2337,9 @@ function selectSignals(signalIds) {
   state.selectedSignalIds = deduped;
   state.selectedSignalId = deduped[0] || null;
   if (state.graph) {
-    tryRenderRdkit(NMRP.smiles.value.trim());
+    const smiles = NMRP.smiles.value.trim();
+    tryRenderRdkit(smiles);
+    tryRender3d(smiles);
   }
   renderAssignments();
   renderActiveSpectrum();
@@ -2327,6 +2385,7 @@ function predictNmr() {
     if (NMRP.cosySummary) NMRP.cosySummary.textContent = String(predictions.cosy.length);
     if (NMRP.noesySummary) NMRP.noesySummary.textContent = String(predictions.noesy.length);
     tryRenderRdkit(smiles);
+    tryRender3d(smiles);
     renderAssignments();
     renderActiveSpectrum();
     setPredictorStatus(`Predicted 1H:${predictions.proton.length} 13C:${predictions.carbon.length} HSQC:${predictions.hsqc.length} COSY:${predictions.cosy.length} NOESY:${predictions.noesy.length} from teaching rules.`);

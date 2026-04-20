@@ -587,7 +587,6 @@ output {
 
 .nmrp-structure {
   min-height: 120px;
-  margin-bottom: 14px;
   display: grid;
   place-items: center;
   border: 1px solid rgba(24, 36, 45, 0.08);
@@ -602,9 +601,35 @@ output {
   max-height: 130px;
 }
 
+.nmrp-visual-grid {
+  display: grid;
+  grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
+}
+
+.nmrp-structure-column {
+  display: grid;
+  grid-template-rows: minmax(120px, auto) minmax(180px, 1fr);
+  gap: 14px;
+}
+
+.nmrp-structure-3d {
+  min-height: 220px;
+  border: 1px solid rgba(24, 36, 45, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.66);
+  overflow: hidden;
+  position: relative;
+}
+
+.nmrp-structure-3d .plot-empty {
+  height: 100%;
+}
+
 .nmrp-spectrum-area {
-  min-height: 280px;
-  height: clamp(280px, calc(100vh - 360px), 360px);
+  min-height: 360px;
+  height: clamp(360px, calc(100vh - 320px), 480px);
   cursor: crosshair;
 }
 
@@ -690,6 +715,15 @@ code {
   .nmr-layer-row {
     grid-template-columns: 46px minmax(0, 1fr) minmax(0, 112px);
   }
+
+  .nmrp-visual-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .nmrp-structure-column {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: none;
+  }
 }
 
 @media (max-width: 640px) {
@@ -735,5 +769,9 @@ code {
   .tof-canvas {
     min-height: min(520px, calc(100vh - 180px));
     height: min(520px, calc(100vh - 180px));
+  }
+
+  .nmrp-structure-column {
+    grid-template-columns: 1fr;
   }
 }
