@@ -259,13 +259,21 @@ function renderTree(nodes, edges, layers, centerPpm, frequencyMHz) {
   const parentNodeIds = new Set(edges.map((edge) => edge.from));
   const leafNodeIds = new Set(nodes.filter((node) => node.depth === layers.length).map((node) => node.id));
   const tickNodeIds = new Set([...parentNodeIds, ...leafNodeIds]);
-  const joinTickHalf = 15;
+  const maxTickHalf = 15;
+  const maxIntensityByDepth = nodes.reduce((map, node) => {
+    map.set(node.depth, Math.max(map.get(node.depth) || 0, node.intensity));
+    return map;
+  }, new Map());
+  const tickHalfForNode = (node) => {
+    const maxIntensity = maxIntensityByDepth.get(node.depth) || node.intensity || 1;
+    return Math.max(2, (node.intensity / maxIntensity) * maxTickHalf);
+  };
 
   const edgeMarkup = edges.map((edge) => {
     const from = nodesById.get(edge.from);
     const to = nodesById.get(edge.to);
-    const fromY = yToPx(from.depth) + joinTickHalf;
-    const toY = tickNodeIds.has(to.id) ? (yToPx(to.depth) - joinTickHalf) : yToPx(to.depth);
+    const fromY = yToPx(from.depth) + tickHalfForNode(from);
+    const toY = tickNodeIds.has(to.id) ? (yToPx(to.depth) - tickHalfForNode(to)) : yToPx(to.depth);
     return `<line x1="${xToPx(hzById.get(from.id)).toFixed(2)}" y1="${fromY.toFixed(2)}" x2="${xToPx(hzById.get(to.id)).toFixed(2)}" y2="${toY.toFixed(2)}" stroke="rgba(11,120,98,0.75)" stroke-width="1.5" stroke-dasharray="4 4"></line>`;
   }).join("");
 
@@ -274,7 +282,8 @@ function renderTree(nodes, edges, layers, centerPpm, frequencyMHz) {
     .map((node) => {
       const x = xToPx(hzById.get(node.id)).toFixed(2);
       const y = yToPx(node.depth);
-      return `<line x1="${x}" y1="${(y - joinTickHalf).toFixed(2)}" x2="${x}" y2="${(y + joinTickHalf).toFixed(2)}" stroke="#24323b" stroke-width="1.6"></line>`;
+      const tickHalf = tickHalfForNode(node);
+      return `<line x1="${x}" y1="${(y - tickHalf).toFixed(2)}" x2="${x}" y2="${(y + tickHalf).toFixed(2)}" stroke="#24323b" stroke-width="1.6"></line>`;
     })
     .join("");
 
