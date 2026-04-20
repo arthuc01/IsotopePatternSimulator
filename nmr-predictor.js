@@ -599,56 +599,120 @@ function renderSpectrum(environments, type) {
     NMRP.spectrum.innerHTML = '<div class="plot-empty">No predicted signals for this nucleus.</div>';
     return;
   }
-  const width = Math.max(NMRP.spectrum.clientWidth || 500, 360);
-  const height = Math.max(NMRP.spectrum.clientHeight || 360, 300);
+  if (!window.Plotly) {
+    NMRP.spectrum.innerHTML = '<div class="plot-empty">Plotly.js did not load. Check network access and refresh.</div>';
+    return;
+  }
   const fullDomain = state.defaultDomains[type];
   const domain = state.viewDomains[type] || fullDomain;
-  const margin = { top: 22, right: 22, bottom: 46, left: 42 };
-  const plotWidth = width - margin.left - margin.right;
-  const plotHeight = height - margin.top - margin.bottom;
   const color = type === "carbon" ? DISPLAY_COLORS.carbon : DISPLAY_COLORS.proton;
   const peaks = expandPeaks(environments, type);
   const fwhm = type === "carbon" ? 0.55 : 0.035;
   const sampleCount = 900;
-  const values = Array.from({ length: sampleCount }, (_, index) => {
+  const xValues = [];
+  const yValues = [];
+  Array.from({ length: sampleCount }, (_, index) => {
     const ppm = domain.min + ((domain.max - domain.min) * index) / (sampleCount - 1);
     const y = peaks.reduce((sum, peak) => sum + peak.intensity * gaussian(ppm, peak.ppm, fwhm), 0);
-    return { ppm, y };
+    xValues.push(ppm);
+    yValues.push(y);
   });
-  const maxY = values.reduce((max, point) => Math.max(max, point.y), 0) || 1;
-  const xToPx = (ppm) => margin.left + ((domain.max - ppm) / (domain.max - domain.min)) * plotWidth;
-  const yToPx = (value) => margin.top + plotHeight - (value / maxY) * plotHeight;
-  const line = values.map((point) => `${xToPx(point.ppm).toFixed(2)},${yToPx(point.y).toFixed(2)}`).join(" ");
-  const fill = `${margin.left},${margin.top + plotHeight} ${line} ${margin.left + plotWidth},${margin.top + plotHeight}`;
-  const tickCount = type === "carbon" ? 8 : 7;
-  const ticks = Array.from({ length: tickCount }, (_, index) => {
-    const frac = index / (tickCount - 1);
-    const ppm = domain.max - frac * (domain.max - domain.min);
-    const x = margin.left + frac * plotWidth;
-    return `<line x1="${x}" y1="${margin.top}" x2="${x}" y2="${margin.top + plotHeight}" stroke="rgba(24,36,45,0.08)"></line><text x="${x}" y="${height - 18}" text-anchor="middle" font-size="11" fill="#56646f">${ppm.toFixed(type === "carbon" ? 0 : 1)}</text>`;
-  }).join("");
-  const sticks = peaks.map((peak) => {
-    if (peak.ppm < domain.min || peak.ppm > domain.max) {
-      return "";
+  const maxY = yValues.reduce((max, y) => Math.max(max, y), 0) || 1;
+  const maxPeak = Math.max(...peaks.map((peak) => peak.intensity), 1);
+  const visiblePeaks = peaks.filter((peak) => peak.ppm >= domain.min && peak.ppm <= domain.max);
+  const profileTrace = {
+    x: xValues,
+    y: yValues.map((y) => (y / maxY) * 100),
+    type: "scatter",
+    mode: "lines",
+    line: { color, width: 2.5 },
+    fill: "tozeroy",
+    fillcolor: type === "carbon" ? "rgba(217,115,13,0.14)" : "rgba(13,108,116,0.14)",
+    hoverinfo: "skip",
+    name: "broadened profile"
+  };
+  const markerTrace = {
+    x: visiblePeaks.map((peak) => peak.ppm),
+    y: visiblePeaks.map((peak) => (peak.intensity / maxPeak) * 100),
+    type: "scatter",
+    mode: "markers",
+    marker: {
+      color: visiblePeaks.map((peak) => peak.env.signalId === state.selectedSignalId ? "#a11d37" : color),
+      size: visiblePeaks.map((peak) => peak.env.signalId === state.selectedSignalId ? 11 : 7),
+      line: { color: "#ffffff", width: 1 }
+    },
+    customdata: visiblePeaks.map((peak) => peak.env.signalId),
+    text: visiblePeaks.map((peak) => `${peak.env.nucleus} ${peak.env.ppm.toFixed(2)} ppm<br>Atoms ${peak.env.atomIds.join(", ")}<br>${peak.env.label}`),
+    hovertemplate: "%{text}<extra></extra>",
+    name: "clickable peaks"
+  };
+  const shapes = visiblePeaks.map((peak) => ({
+    type: "line",
+    xref: "x",
+    yref: "y",
+    x0: peak.ppm,
+    x1: peak.ppm,
+    y0: 0,
+    y1: (peak.intensity / maxPeak) * 100,
+    line: {
+      color: peak.env.signalId === state.selectedSignalId ? "#a11d37" : color,
+      width: peak.env.signalId === state.selectedSignalId ? 4 : type === "carbon" ? 2.2 : 1.4
     }
-    const x = xToPx(peak.ppm);
-    const y = yToPx((peak.intensity / Math.max(...peaks.map((p) => p.intensity))) * maxY);
-    const selected = peak.env.signalId === state.selectedSignalId;
-    return `<line class="nmrp-peak" data-signal-id="${peak.env.signalId}" x1="${x.toFixed(2)}" y1="${margin.top + plotHeight}" x2="${x.toFixed(2)}" y2="${y.toFixed(2)}" stroke="${selected ? "#a11d37" : color}" stroke-width="${selected ? 4 : type === "carbon" ? 2.2 : 1.4}" opacity="${selected ? 1 : 0.75}"><title>${peak.env.nucleus} ${peak.env.ppm.toFixed(2)} ppm, atoms ${peak.env.atomIds.join(", ")}</title></line>`;
-  }).join("");
-
-  const rangeText = `${domain.max.toFixed(type === "carbon" ? 0 : 2)} to ${domain.min.toFixed(type === "carbon" ? 0 : 2)} ppm`;
-  NMRP.spectrum.innerHTML = `<svg class="plot-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none"><rect x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" rx="14" fill="rgba(255,255,255,0.72)"></rect>${ticks}<line x1="${margin.left}" y1="${margin.top + plotHeight}" x2="${margin.left + plotWidth}" y2="${margin.top + plotHeight}" stroke="#23343f"></line><line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + plotHeight}" stroke="#23343f"></line><polygon points="${fill}" fill="${type === "carbon" ? "rgba(217,115,13,0.14)" : "rgba(13,108,116,0.14)"}"></polygon><polyline points="${line}" fill="none" stroke="${color}" stroke-width="2.3" stroke-linejoin="round"></polyline>${sticks}<text x="${margin.left + plotWidth / 2}" y="${height - 2}" text-anchor="middle" font-size="12" fill="#18242d">Chemical shift (ppm)</text><text x="${margin.left + 8}" y="${margin.top + 14}" font-size="12" fill="#18242d">${type === "carbon" ? "13C" : "1H"} predicted spectrum</text><text x="${width - 24}" y="${margin.top + 14}" text-anchor="end" font-size="11" fill="#56646f">${rangeText}</text></svg>`;
-  bindPeakEvents();
+  }));
+  const layout = {
+    autosize: true,
+    margin: { t: 34, r: 22, b: 46, l: 42 },
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor: "rgba(255,255,255,0.72)",
+    showlegend: false,
+    dragmode: "zoom",
+    shapes,
+    title: {
+      text: `${type === "carbon" ? "13C" : "1H"} predicted spectrum`,
+      x: 0.02,
+      xanchor: "left",
+      font: { size: 13, color: "#18242d" }
+    },
+    xaxis: {
+      title: "Chemical shift (ppm)",
+      autorange: "reversed",
+      range: [domain.max, domain.min],
+      gridcolor: "rgba(24,36,45,0.08)",
+      zeroline: false
+    },
+    yaxis: {
+      title: "Relative intensity",
+      range: [0, 108],
+      gridcolor: "rgba(24,36,45,0.08)",
+      zeroline: false,
+      fixedrange: true
+    }
+  };
+  const config = {
+    responsive: true,
+    scrollZoom: true,
+    displaylogo: false,
+    modeBarButtonsToRemove: ["lasso2d", "select2d", "autoScale2d"]
+  };
+  window.Plotly.react(NMRP.spectrum, [profileTrace, markerTrace], layout, config).then(() => {
+    NMRP.spectrum.removeAllListeners?.("plotly_click");
+    NMRP.spectrum.removeAllListeners?.("plotly_relayout");
+    NMRP.spectrum.on("plotly_click", (event) => {
+      const signalId = event.points?.find((point) => point.customdata)?.customdata;
+      if (signalId) selectSignal(signalId);
+    });
+    NMRP.spectrum.on("plotly_relayout", (event) => {
+      const min = event["xaxis.range[1]"];
+      const max = event["xaxis.range[0]"];
+      if (Number.isFinite(min) && Number.isFinite(max)) {
+        state.viewDomains[type] = { min: Math.min(min, max), max: Math.max(min, max) };
+      }
+    });
+  });
 }
 
 function bindPeakEvents() {
-  NMRP.spectrum.querySelectorAll(".nmrp-peak").forEach((peak) => {
-    peak.addEventListener("click", (event) => {
-      event.stopPropagation();
-      selectSignal(peak.dataset.signalId);
-    });
-  });
+  // Plotly handles peak click binding in renderSpectrum.
 }
 
 function zoomSpectrum(factor, centerPpm = null) {
@@ -860,10 +924,6 @@ NMRP.zoomIn.addEventListener("click", () => zoomSpectrum(0.5));
 NMRP.zoomOut.addEventListener("click", () => zoomSpectrum(2));
 NMRP.resetZoom.addEventListener("click", () => resetSpectrumZoom());
 NMRP.splittingMode.addEventListener("change", predictNmr);
-NMRP.spectrum.addEventListener("wheel", (event) => {
-  event.preventDefault();
-  zoomSpectrum(event.deltaY > 0 ? 1.25 : 0.8, ppmFromPointer(event));
-}, { passive: false });
 NMRP.spectrum.addEventListener("dblclick", () => resetSpectrumZoom());
 document.querySelectorAll(".nmr-example").forEach((button) => {
   button.addEventListener("click", () => {
