@@ -565,7 +565,7 @@ function normalizeSignalSplitting(signal) {
 function applyTieBreaking(signals) {
   const exactGroups = new Map();
   signals.forEach((signal) => {
-    const key = `${signal.nucleus}|${signal.ppm.toFixed(4)}`;
+    const key = `${signal.nucleus}|${signal.ppm.toFixed(3)}`;
     const bucket = exactGroups.get(key) || [];
     bucket.push(signal);
     exactGroups.set(key, bucket);
@@ -573,8 +573,9 @@ function applyTieBreaking(signals) {
   exactGroups.forEach((bucket) => {
     const uniqueKeys = new Set(bucket.map((signal) => signal.environmentKey));
     if (uniqueKeys.size <= 1) return;
-    bucket.forEach((signal) => {
-      const offset = ((stableHash(signal.environmentKey) % 7) - 3) * 0.01;
+    const ordered = [...bucket].sort((a, b) => stableHash(a.environmentKey) - stableHash(b.environmentKey));
+    ordered.forEach((signal, index) => {
+      const offset = (index - (ordered.length - 1) / 2) * 0.014;
       signal.ppm += offset;
       signal.label = `${signal.label}; tiny deterministic tie-break ${offset >= 0 ? "+" : ""}${offset.toFixed(2)} ppm`;
     });
@@ -651,11 +652,16 @@ function gaussian(x, center, fwhm) {
   return Math.exp(-0.5 * z * z);
 }
 
+function gaussianAreaHeight(area, fwhm) {
+  const sigma = fwhm / 2.354820045;
+  return area / (sigma * Math.sqrt(2 * Math.PI));
+}
+
 function expandPeaks(environments, type) {
   const peaks = [];
   environments.forEach((env) => {
     if (type === "carbon") {
-      peaks.push({ ppm: env.ppm, intensity: 1, env, fwhm: 0.55 });
+      peaks.push({ ppm: env.ppm, intensity: Math.max(1, env.atomIds.length), env, fwhm: 0.55 });
       return;
     }
     let components = [{ offsetHz: 0, intensity: 1 }];
@@ -702,6 +708,39 @@ function attachComponents(signals, type) {
   });
 }
 
+function labelItemsForSpectrum(environments, visiblePeaks, type, profileHeightAt) {
+  if (type === "proton") {
+    return environments.map((env) => {
+      const envPeaks = visiblePeaks.filter((peak) => peak.env.signalId === env.signalId);
+      const top = envPeaks.reduce((max, peak) => Math.max(max, profileHeightAt(peak.ppm)), 0);
+      return { ppm: env.ppm, y: Math.min(99, top + 5), text: `${env.integration}H` };
+    });
+  }
+
+  const sorted = environments
+    .filter((env) => visiblePeaks.some((peak) => peak.env.signalId === env.signalId))
+    .sort((a, b) => a.ppm - b.ppm);
+  const clusters = [];
+  sorted.forEach((env) => {
+    const current = clusters[clusters.length - 1];
+    if (current && Math.abs(env.ppm - current.lastPpm) <= 0.2) {
+      current.signals.push(env);
+      current.lastPpm = env.ppm;
+    } else {
+      clusters.push({ signals: [env], lastPpm: env.ppm });
+    }
+  });
+  return clusters.map((cluster) => {
+    const carbonCount = cluster.signals.reduce((sum, env) => sum + env.atomIds.length, 0);
+    const ppm = cluster.signals.reduce((sum, env) => sum + env.ppm * env.atomIds.length, 0) / carbonCount;
+    const top = cluster.signals.reduce((max, env) => {
+      const envPeaks = visiblePeaks.filter((peak) => peak.env.signalId === env.signalId);
+      return Math.max(max, envPeaks.reduce((peakMax, peak) => Math.max(peakMax, profileHeightAt(peak.ppm)), 0));
+    }, 0);
+    return { ppm, y: Math.min(99, top + 5), text: `${carbonCount}C` };
+  });
+}
+
 function renderSpectrum(environments, type) {
   if (!environments.length) {
     NMRP.spectrum.innerHTML = '<div class="plot-empty">No predicted signals for this nucleus.</div>';
@@ -721,7 +760,10 @@ function renderSpectrum(environments, type) {
   const yValues = [];
   Array.from({ length: sampleCount }, (_, index) => {
     const ppm = domain.min + ((domain.max - domain.min) * index) / (sampleCount - 1);
-    const y = peaks.reduce((sum, peak) => sum + peak.intensity * gaussian(ppm, peak.ppm, peak.fwhm || fwhm), 0);
+    const y = peaks.reduce((sum, peak) => {
+      const peakFwhm = peak.fwhm || fwhm;
+      return sum + gaussianAreaHeight(peak.intensity, peakFwhm) * gaussian(ppm, peak.ppm, peakFwhm);
+    }, 0);
     xValues.push(ppm);
     yValues.push(y);
   });
@@ -729,11 +771,15 @@ function renderSpectrum(environments, type) {
   const maxPeak = Math.max(...peaks.map((peak) => peak.intensity), 1);
   const visiblePeaks = peaks.filter((peak) => peak.ppm >= domain.min && peak.ppm <= domain.max);
   const profileHeightAt = (ppm) => {
-    const y = peaks.reduce((sum, peak) => sum + peak.intensity * gaussian(ppm, peak.ppm, peak.fwhm || fwhm), 0);
+    const y = peaks.reduce((sum, peak) => {
+      const peakFwhm = peak.fwhm || fwhm;
+      return sum + gaussianAreaHeight(peak.intensity, peakFwhm) * gaussian(ppm, peak.ppm, peakFwhm);
+    }, 0);
     return (y / maxY) * 100;
   };
   const showTms = domain.min <= 0 && domain.max >= 0;
   const tmsHeight = 14;
+  const labelItems = labelItemsForSpectrum(environments, visiblePeaks, type, profileHeightAt);
   const profileTrace = {
     x: xValues,
     y: yValues.map((y) => (y / maxY) * 100),
@@ -761,15 +807,11 @@ function renderSpectrum(environments, type) {
     name: "clickable peaks"
   };
   const integralLabelTrace = {
-    x: type === "proton" ? environments.map((env) => env.ppm) : [],
-    y: type === "proton" ? environments.map((env) => {
-      const envPeaks = visiblePeaks.filter((peak) => peak.env.signalId === env.signalId);
-      const top = envPeaks.reduce((max, peak) => Math.max(max, profileHeightAt(peak.ppm)), 0);
-      return Math.min(99, top + 5);
-    }) : [],
+    x: labelItems.map((item) => item.ppm),
+    y: labelItems.map((item) => item.y),
     type: "scatter",
     mode: "text",
-    text: type === "proton" ? environments.map((env) => `${env.integration}H`) : [],
+    text: labelItems.map((item) => item.text),
     textfont: { color: "#18242d", size: 12 },
     textposition: "top center",
     hoverinfo: "skip",
@@ -997,6 +1039,33 @@ function inferSvgAtomPositions(svg, graph) {
     .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
   if (explicit.length >= graph.atoms.length) {
     return explicit.slice(0, graph.atoms.length);
+  }
+
+  const atomPositions = Array.from({ length: graph.atoms.length }, () => ({ x: 0, y: 0, count: 0 }));
+  const bondPaths = Array.from(svg.matchAll(/<path\b[^>]*class=['"][^'"]*atom-(\d+)[^'"]*atom-(\d+)[^'"]*['"][^>]*\bd=['"]([^'"]+)['"][^>]*>/g));
+  bondPaths.forEach((match) => {
+    const firstAtom = Number(match[1]);
+    const secondAtom = Number(match[2]);
+    const coords = Array.from(match[3].matchAll(/[-+]?\d*\.?\d+(?:e[-+]?\d+)?/gi)).map((coord) => Number(coord[0]));
+    if (!Number.isInteger(firstAtom) || !Number.isInteger(secondAtom) || coords.length < 4) {
+      return;
+    }
+    const [x1, y1, x2, y2] = coords;
+    [[firstAtom, x1, y1], [secondAtom, x2, y2]].forEach(([atomId, x, y]) => {
+      if (!atomPositions[atomId] || !Number.isFinite(x) || !Number.isFinite(y)) {
+        return;
+      }
+      const position = atomPositions[atomId];
+      position.x += x;
+      position.y += y;
+      position.count += 1;
+    });
+  });
+  if (atomPositions.every((position) => position.count > 0)) {
+    return atomPositions.map((position) => ({
+      x: position.x / position.count,
+      y: position.y / position.count
+    }));
   }
 
   const bondCoordinates = Array.from(svg.matchAll(/x1=['"]([\d.-]+)['"][^>]*y1=['"]([\d.-]+)['"][^>]*x2=['"]([\d.-]+)['"][^>]*y2=['"]([\d.-]+)['"]/g))
