@@ -8,6 +8,7 @@ const NMRP = {
   carbonSummary: document.getElementById("nmrp-carbon-summary"),
   hsqcSummary: document.getElementById("nmrp-hsqc-summary"),
   cosySummary: document.getElementById("nmrp-cosy-summary"),
+  noesySummary: document.getElementById("nmrp-noesy-summary"),
   structure: document.getElementById("nmrp-structure"),
   spectrum: document.getElementById("nmrp-spectrum"),
   table: document.getElementById("nmrp-table-body"),
@@ -15,6 +16,7 @@ const NMRP = {
   carbonTab: document.getElementById("nmrp-carbon-tab"),
   hsqcTab: document.getElementById("nmrp-hsqc-tab"),
   cosyTab: document.getElementById("nmrp-cosy-tab"),
+  noesyTab: document.getElementById("nmrp-noesy-tab"),
   caption: document.getElementById("nmrp-spectrum-caption"),
   downloadCsv: document.getElementById("nmrp-download-csv"),
   zoomIn: document.getElementById("nmrp-zoom-in"),
@@ -45,7 +47,7 @@ const state = {
   graph: null,
   lastSmiles: "",
   predictionRunId: 0,
-  predictions: { proton: [], carbon: [], hsqc: [], cosy: [] },
+  predictions: { proton: [], carbon: [], hsqc: [], cosy: [], noesy: [] },
   defaultDomains: {
     proton: { min: 0, max: 12 },
     carbon: { min: 0, max: 220 }
@@ -56,7 +58,8 @@ const state = {
   },
   viewDomains2D: {
     hsqc: { x: { min: 0, max: 12 }, y: { min: 0, max: 220 } },
-    cosy: { x: { min: 0, max: 12 }, y: { min: 0, max: 12 } }
+    cosy: { x: { min: 0, max: 12 }, y: { min: 0, max: 12 } },
+    noesy: { x: { min: 0, max: 12 }, y: { min: 0, max: 12 } }
   }
 };
 
@@ -1349,6 +1352,186 @@ function predictCosy(graph, protonSignals) {
   return peaks.sort((a, b) => b.y - a.y || b.x - a.x);
 }
 
+function parseMolblockAtomCoordinates(molblock, atomCount) {
+  if (!molblock || !Number.isFinite(atomCount) || atomCount <= 0) return [];
+  const lines = String(molblock).split(/\r?\n/);
+  if (lines.length < 5) return [];
+  const atomLines = lines.slice(4, 4 + atomCount);
+  return atomLines.map((line) => {
+    const x = Number(line.slice(0, 10).trim());
+    const y = Number(line.slice(10, 20).trim());
+    const z = Number(line.slice(20, 30).trim());
+    if (![x, y, z].every(Number.isFinite)) {
+      return null;
+    }
+    return { x, y, z };
+  }).filter(Boolean);
+}
+
+function fallbackNoesyCoordinates(graph) {
+  const coords = [];
+  graph.atoms.forEach((atom) => {
+    const angle = (atom.id / Math.max(1, graph.atoms.length)) * Math.PI * 2;
+    const degree = neighbors(graph, atom).length;
+    coords.push({
+      x: Math.cos(angle) * (1 + degree * 0.25),
+      y: Math.sin(angle) * (1 + degree * 0.25),
+      z: (atom.id % 3) * 0.55 + degree * 0.2
+    });
+  });
+  return coords;
+}
+
+function rdkitNoesyCoordinates(smiles, graph) {
+  if (!state.rdkit || !smiles) {
+    return fallbackNoesyCoordinates(graph);
+  }
+  let mol = null;
+  try {
+    mol = state.rdkit.get_mol(smiles);
+    if (!mol) return fallbackNoesyCoordinates(graph);
+    if (mol.get_new_coords) {
+      mol.get_new_coords();
+    }
+    const atomCount = mol.get_num_atoms ? Number(mol.get_num_atoms()) : graph.atoms.length;
+    const coords = parseMolblockAtomCoordinates(mol.get_molblock?.(), atomCount);
+    if (coords.length < graph.atoms.length) {
+      return fallbackNoesyCoordinates(graph);
+    }
+    const allFlat = coords.every((point) => Math.abs(point.z) < 1e-4);
+    if (allFlat) {
+      const lifted = fallbackNoesyCoordinates(graph);
+      return coords.map((point, index) => ({
+        x: point.x,
+        y: point.y,
+        z: lifted[index]?.z ?? 0
+      }));
+    }
+    return coords;
+  } catch (error) {
+    return fallbackNoesyCoordinates(graph);
+  } finally {
+    if (mol?.delete) mol.delete();
+  }
+}
+
+function centroidForSignal(signal, atomCoordinates) {
+  const carriers = dedupeSortedNumeric(signal.carrierAtomIds || signal.sourceAtomIds || []);
+  const points = carriers
+    .map((atomId) => atomCoordinates[atomId - 1])
+    .filter((point) => point && [point.x, point.y, point.z].every(Number.isFinite));
+  if (!points.length) return null;
+  const totals = points.reduce((sum, point) => ({
+    x: sum.x + point.x,
+    y: sum.y + point.y,
+    z: sum.z + point.z
+  }), { x: 0, y: 0, z: 0 });
+  return {
+    x: totals.x / points.length,
+    y: totals.y / points.length,
+    z: totals.z / points.length
+  };
+}
+
+function noesyDistance(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+function noesyVolume(distance) {
+  const safeDistance = Math.max(1.6, distance);
+  return 1 / (safeDistance ** 6);
+}
+
+function predictNoesy(graph, protonSignals, smiles = "") {
+  const peaks = [];
+  const atomCoordinates = rdkitNoesyCoordinates(smiles, graph);
+  const activeSignals = protonSignals
+    .filter((signal) => signal.nucleus === "1H")
+    .filter((signal) => {
+      const carrierIds = signal.carrierAtomIds || signal.sourceAtomIds || [];
+      return carrierIds.some((atomId) => {
+        const atom = graph.atoms[atomId - 1];
+        return atom && !isExchangeableProtonCarrier(graph, atom);
+      });
+    })
+    .map((signal) => ({ signal, centroid: centroidForSignal(signal, atomCoordinates) }))
+    .filter((entry) => entry.centroid);
+  if (!activeSignals.length) {
+    return peaks;
+  }
+
+  const offDiagonal = [];
+  for (let i = 0; i < activeSignals.length; i += 1) {
+    for (let j = i + 1; j < activeSignals.length; j += 1) {
+      const a = activeSignals[i];
+      const b = activeSignals[j];
+      const distance = noesyDistance(a.centroid, b.centroid);
+      if (!Number.isFinite(distance) || distance > 5) continue;
+      const volume = noesyVolume(distance);
+      const pairKey = [a.signal.signalId, b.signal.signalId].sort().join("|");
+      const label = `H${a.signal.atomIds.join(",")} ↔ H${b.signal.atomIds.join(",")} (${distance.toFixed(2)} Å)`;
+      offDiagonal.push({
+        pairKey,
+        signalA: a.signal,
+        signalB: b.signal,
+        distance,
+        volume,
+        label
+      });
+    }
+  }
+
+  const maxVolume = Math.max(1e-9, ...offDiagonal.map((peak) => peak.volume));
+  const diagonalScale = 0.35;
+  activeSignals.forEach(({ signal }) => {
+    peaks.push({
+      peakId: `NOESY-D-${signal.signalId}`,
+      signalAId: signal.signalId,
+      signalBId: signal.signalId,
+      atomIdsA: [...signal.atomIds],
+      atomIdsB: [...signal.atomIds],
+      x: signal.ppm,
+      y: signal.ppm,
+      distance: 0,
+      volume: maxVolume * diagonalScale,
+      diagonal: true,
+      label: `H${signal.atomIds.join(",")} diagonal`
+    });
+  });
+
+  offDiagonal.forEach((pair) => {
+    const normalizedVolume = pair.volume / maxVolume;
+    peaks.push({
+      peakId: `NOESY-${stableHash(`${pair.pairKey}-ab`).toString(16)}`,
+      signalAId: pair.signalA.signalId,
+      signalBId: pair.signalB.signalId,
+      atomIdsA: [...pair.signalA.atomIds],
+      atomIdsB: [...pair.signalB.atomIds],
+      x: pair.signalA.ppm,
+      y: pair.signalB.ppm,
+      distance: pair.distance,
+      volume: normalizedVolume,
+      diagonal: false,
+      label: pair.label
+    });
+    peaks.push({
+      peakId: `NOESY-${stableHash(`${pair.pairKey}-ba`).toString(16)}`,
+      signalAId: pair.signalB.signalId,
+      signalBId: pair.signalA.signalId,
+      atomIdsA: [...pair.signalB.atomIds],
+      atomIdsB: [...pair.signalA.atomIds],
+      x: pair.signalB.ppm,
+      y: pair.signalA.ppm,
+      distance: pair.distance,
+      volume: normalizedVolume,
+      diagonal: false,
+      label: pair.label
+    });
+  });
+
+  return peaks.sort((a, b) => b.y - a.y || b.x - a.x);
+}
+
 function clampShift(ppm, nucleus) {
   if (nucleus === "13C") return Math.min(220, Math.max(0, ppm));
   return Math.min(13, Math.max(0, ppm));
@@ -1623,42 +1806,87 @@ function render2DSpectrum(peaks, type) {
   const domains = state.viewDomains2D[type];
   const diagonal = peaks.filter((peak) => peak.diagonal);
   const cross = peaks.filter((peak) => !peak.diagonal);
-  const markerColor = type === "hsqc" ? "#0d6c74" : "#1b6a8e";
+  const markerColor = type === "hsqc" ? "#0d6c74" : type === "noesy" ? "#a23a17" : "#1b6a8e";
+  const isPeakSelected = (peak) => {
+    const first = peak.signalAId || peak.protonSignalId;
+    const second = peak.signalBId || peak.carbonSignalId;
+    return state.selectedSignalIds.includes(first) || state.selectedSignalIds.includes(second);
+  };
+  const maxVolume = Math.max(1e-9, ...cross.map((peak) => peak.volume || 0));
+  const markerSizes = cross.map((peak) => {
+    if (type !== "noesy") return isPeakSelected(peak) ? 11 : 8;
+    const scaled = 6 + ((peak.volume || 0) / maxVolume) * 9;
+    return isPeakSelected(peak) ? Math.max(10, scaled + 2) : scaled;
+  });
+  const markerText = cross.map((peak) => {
+    if (type !== "noesy") return peak.label;
+    return `${peak.label}<br>distance ${peak.distance.toFixed(2)} Å; relative volume ${peak.volume.toFixed(3)}`;
+  });
   const crossTrace = {
     x: cross.map((peak) => peak.x),
     y: cross.map((peak) => peak.y),
     type: "scatter",
     mode: "markers",
     marker: {
-      color: cross.map((peak) => (state.selectedSignalIds.includes(peak.signalAId || peak.protonSignalId) || state.selectedSignalIds.includes(peak.signalBId || peak.carbonSignalId)) ? "#a11d37" : markerColor),
-      size: cross.map((peak) => (state.selectedSignalIds.includes(peak.signalAId || peak.protonSignalId) || state.selectedSignalIds.includes(peak.signalBId || peak.carbonSignalId)) ? 11 : 8),
+      color: cross.map((peak) => (isPeakSelected(peak) ? "#a11d37" : markerColor)),
+      size: markerSizes,
       opacity: 0.9,
       line: { color: "#ffffff", width: 1 }
     },
     customdata: cross.map((peak) => peak.peakId),
-    text: cross.map((peak) => peak.label),
+    text: markerText,
     hovertemplate: "%{text}<extra></extra>",
     name: `${type.toUpperCase()} cross-peaks`
   };
-  const diagonalTrace = type === "cosy" ? {
+  const diagonalTrace = (type === "cosy" || type === "noesy") ? {
     x: diagonal.map((peak) => peak.x),
     y: diagonal.map((peak) => peak.y),
     type: "scatter",
     mode: "markers",
-    marker: { color: "rgba(86,100,111,0.45)", size: 6 },
+    marker: { color: "rgba(86,100,111,0.42)", size: type === "noesy" ? 5 : 6 },
     customdata: diagonal.map((peak) => peak.peakId),
     text: diagonal.map((peak) => peak.label),
     hovertemplate: "%{text}<extra></extra>",
-    name: "COSY diagonal"
+    name: `${type.toUpperCase()} diagonal`
   } : null;
-  const traces = diagonalTrace ? [crossTrace, diagonalTrace] : [crossTrace];
+  const gaussianBlobTrace = type === "noesy" ? (() => {
+    const x = Array.from({ length: 90 }, (_, index) => domains.x.min + ((domains.x.max - domains.x.min) * index) / 89);
+    const y = Array.from({ length: 90 }, (_, index) => domains.y.min + ((domains.y.max - domains.y.min) * index) / 89);
+    const sigma = 0.10;
+    const z = y.map((yv) => x.map((xv) => {
+      const sum = cross.reduce((acc, peak) => {
+        const dx = xv - peak.x;
+        const dy = yv - peak.y;
+        const amplitude = peak.volume || 0;
+        return acc + amplitude * Math.exp(-((dx * dx) + (dy * dy)) / (2 * sigma * sigma));
+      }, 0);
+      return sum;
+    }));
+    return {
+      x,
+      y,
+      z,
+      type: "heatmap",
+      colorscale: [
+        [0.0, "rgba(255,255,255,0.0)"],
+        [0.25, "rgba(250,195,122,0.35)"],
+        [0.5, "rgba(239,143,86,0.5)"],
+        [0.75, "rgba(204,92,56,0.62)"],
+        [1.0, "rgba(155,40,20,0.78)"]
+      ],
+      showscale: false,
+      hoverinfo: "skip",
+      name: "NOESY blob"
+    };
+  })() : null;
+  const traces = [gaussianBlobTrace, crossTrace, diagonalTrace].filter(Boolean);
   const yTitle = type === "hsqc" ? "13C shift (ppm)" : "1H shift (ppm)";
   const layout = {
     autosize: true,
     margin: { t: 34, r: 22, b: 46, l: 52 },
     paper_bgcolor: "rgba(0,0,0,0)",
     plot_bgcolor: "rgba(255,255,255,0.72)",
-    showlegend: type === "cosy",
+    showlegend: type === "cosy" || type === "noesy",
     dragmode: "zoom",
     title: {
       text: `${type.toUpperCase()} predicted map`,
@@ -1762,7 +1990,7 @@ function zoomSpectrum(factor, centerPpm = null) {
 }
 
 function resetSpectrumZoom(type = state.activeSpectrum) {
-  if (type === "hsqc" || type === "cosy") {
+  if (type === "hsqc" || type === "cosy" || type === "noesy") {
     state.viewDomains2D[type] = type === "hsqc"
       ? { x: { min: 0, max: 12 }, y: { min: 0, max: 220 } }
       : { x: { min: 0, max: 12 }, y: { min: 0, max: 12 } };
@@ -1802,7 +2030,7 @@ function renderAssignments() {
 
 function exportActiveSpectrumCsv() {
   const type = state.activeSpectrum;
-  if (type === "hsqc" || type === "cosy") {
+  if (type === "hsqc" || type === "cosy" || type === "noesy") {
     export2DCsv(type, state.predictions[type] || []);
     return;
   }
@@ -1841,7 +2069,9 @@ function export2DCsv(type, peaks) {
   }
   const lines = type === "hsqc"
     ? ["experiment,peak_id,proton_ppm,carbon_ppm,proton_signal_id,carbon_signal_id,proton_atom_ids,carbon_atom_ids,label"]
-    : ["experiment,peak_id,x_ppm,y_ppm,signal_a_id,signal_b_id,atom_ids_a,atom_ids_b,diagonal,label"];
+    : type === "cosy"
+      ? ["experiment,peak_id,x_ppm,y_ppm,signal_a_id,signal_b_id,atom_ids_a,atom_ids_b,diagonal,label"]
+      : ["experiment,peak_id,x_ppm,y_ppm,signal_a_id,signal_b_id,atom_ids_a,atom_ids_b,distance_a,relative_volume,diagonal,label"];
   peaks.forEach((peak) => {
     if (type === "hsqc") {
       lines.push([
@@ -1855,7 +2085,7 @@ function export2DCsv(type, peaks) {
         `"${peak.carbonAtomIds.join(" ")}"`,
         `"${String(peak.label || "").replace(/"/g, '""')}"`
       ].join(","));
-    } else {
+    } else if (type === "cosy") {
       lines.push([
         "COSY",
         peak.peakId,
@@ -1865,6 +2095,21 @@ function export2DCsv(type, peaks) {
         peak.signalBId,
         `"${peak.atomIdsA.join(" ")}"`,
         `"${peak.atomIdsB.join(" ")}"`,
+        peak.diagonal ? "true" : "false",
+        `"${String(peak.label || "").replace(/"/g, '""')}"`
+      ].join(","));
+    } else {
+      lines.push([
+        "NOESY",
+        peak.peakId,
+        peak.x.toFixed(5),
+        peak.y.toFixed(5),
+        peak.signalAId,
+        peak.signalBId,
+        `"${peak.atomIdsA.join(" ")}"`,
+        `"${peak.atomIdsB.join(" ")}"`,
+        Number.isFinite(peak.distance) ? peak.distance.toFixed(4) : "",
+        Number.isFinite(peak.volume) ? peak.volume.toFixed(6) : "",
         peak.diagonal ? "true" : "false",
         `"${String(peak.label || "").replace(/"/g, '""')}"`
       ].join(","));
@@ -1882,16 +2127,19 @@ function renderActiveSpectrum() {
   NMRP.carbonTab.classList.toggle("nav-link-active", type === "carbon");
   NMRP.hsqcTab?.classList.toggle("nav-link-active", type === "hsqc");
   NMRP.cosyTab?.classList.toggle("nav-link-active", type === "cosy");
+  NMRP.noesyTab?.classList.toggle("nav-link-active", type === "noesy");
   if (NMRP.caption) {
     if (type === "hsqc") {
       NMRP.caption.textContent = "Teaching approximation: one-bond H-C correlations only; no phase editing or long-range correlations.";
     } else if (type === "cosy") {
       NMRP.caption.textContent = "Teaching approximation: mainly vicinal/aromatic-neighbour couplings; weak/long-range couplings omitted.";
+    } else if (type === "noesy") {
+      NMRP.caption.textContent = "Teaching approximation: RDKit-based coordinate model with peaks for proton pairs within 5 Å; volume scales roughly with 1/r^6.";
     } else {
       NMRP.caption.textContent = "Switch between 1D and 2D teaching spectra.";
     }
   }
-  if (type === "hsqc" || type === "cosy") {
+  if (type === "hsqc" || type === "cosy" || type === "noesy") {
     render2DSpectrum(state.predictions[type], type);
   } else {
     renderSpectrum(state.predictions[type], type);
@@ -2051,7 +2299,8 @@ function predictNmr() {
     const predictions1d = predictEnvironments(graph);
     const hsqc = predictHsqc(graph, predictions1d.proton, predictions1d.carbon);
     const cosy = predictCosy(graph, predictions1d.proton);
-    const predictions = { ...predictions1d, hsqc, cosy };
+    const noesy = predictNoesy(graph, predictions1d.proton, smiles);
+    const predictions = { ...predictions1d, hsqc, cosy, noesy };
     if (runId !== state.predictionRunId) {
       return;
     }
@@ -2067,7 +2316,8 @@ function predictNmr() {
       };
       state.viewDomains2D = {
         hsqc: { x: { min: 0, max: 12 }, y: { min: 0, max: 220 } },
-        cosy: { x: { min: 0, max: 12 }, y: { min: 0, max: 12 } }
+        cosy: { x: { min: 0, max: 12 }, y: { min: 0, max: 12 } },
+        noesy: { x: { min: 0, max: 12 }, y: { min: 0, max: 12 } }
       };
     }
     state.lastSmiles = smiles;
@@ -2075,10 +2325,11 @@ function predictNmr() {
     NMRP.carbonSummary.textContent = String(predictions.carbon.length);
     if (NMRP.hsqcSummary) NMRP.hsqcSummary.textContent = String(predictions.hsqc.length);
     if (NMRP.cosySummary) NMRP.cosySummary.textContent = String(predictions.cosy.length);
+    if (NMRP.noesySummary) NMRP.noesySummary.textContent = String(predictions.noesy.length);
     tryRenderRdkit(smiles);
     renderAssignments();
     renderActiveSpectrum();
-    setPredictorStatus(`Predicted 1H:${predictions.proton.length} 13C:${predictions.carbon.length} HSQC:${predictions.hsqc.length} COSY:${predictions.cosy.length} from teaching rules.`);
+    setPredictorStatus(`Predicted 1H:${predictions.proton.length} 13C:${predictions.carbon.length} HSQC:${predictions.hsqc.length} COSY:${predictions.cosy.length} NOESY:${predictions.noesy.length} from teaching rules.`);
   } catch (error) {
     setPredictorStatus(error.message || "Could not predict this structure.", true);
   }
@@ -2158,6 +2409,10 @@ NMRP.hsqcTab?.addEventListener("click", () => {
 });
 NMRP.cosyTab?.addEventListener("click", () => {
   state.activeSpectrum = "cosy";
+  renderActiveSpectrum();
+});
+NMRP.noesyTab?.addEventListener("click", () => {
+  state.activeSpectrum = "noesy";
   renderActiveSpectrum();
 });
 NMRP.downloadCsv.addEventListener("click", exportActiveSpectrumCsv);

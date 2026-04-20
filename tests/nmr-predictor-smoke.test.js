@@ -74,7 +74,8 @@ function run() {
     parseSmiles,
     predictEnvironments,
     predictHsqc,
-    predictCosy
+    predictCosy,
+    predictNoesy
   } = ctx;
 
   assert.equal(typeof parseSmiles, "function", "parseSmiles should be defined");
@@ -108,6 +109,7 @@ function run() {
   const ethanolGraph = parseSmiles("CCO");
   const ethanolHsqc = predictHsqc(ethanolGraph, ethanolPred.proton, ethanolPred.carbon);
   const ethanolCosy = predictCosy(ethanolGraph, ethanolPred.proton);
+  const ethanolNoesy = predictNoesy(ethanolGraph, ethanolPred.proton, "CCO");
   assert.equal(ethanolHsqc.length, 2, "ethanol HSQC should include CH3 and CH2 only (no OH)");
   assert.equal(
     ethanolHsqc.some((peak) => peak.protonAtomIds.some((atomId) => {
@@ -120,7 +122,17 @@ function run() {
   assert.equal(
     ethanolCosy.some((peak) => !peak.diagonal),
     true,
-    "ethanol COSY should include at least one off-diagonal coupling (CH3↔CH2)"
+    "ethanol COSY should include at least one off-diagonal coupling (CH3->CH2)"
+  );
+  assert.equal(
+    ethanolNoesy.some((peak) => !peak.diagonal),
+    true,
+    "ethanol NOESY should include at least one off-diagonal coupling"
+  );
+  assert.equal(
+    ethanolNoesy.some((peak) => peak.atomIdsA.some((atomId) => ethanolGraph.atoms[atomId - 1]?.element === "O")),
+    false,
+    "ethanol NOESY should exclude exchangeable OH carrier peaks"
   );
 
   const chloroformPred = predictEnvironments(parseSmiles("C(Cl)(Cl)Cl"));

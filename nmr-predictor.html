@@ -11,7 +11,7 @@
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <script src="https://unpkg.com/@rdkit/rdkit/dist/RDKit_minimal.js"></script>
   <script src="https://jsme-editor.github.io/dist/jsme/jsme.nocache.js"></script>
-  <script src="nmr-predictor.js?v=20260420h" defer></script>
+  <script src="nmr-predictor.js?v=20260420j" defer></script>
 </head>
 <body>
   <div class="page-shell">
@@ -87,6 +87,10 @@
             <strong id="nmrp-cosy-summary">-</strong>
           </div>
           <div class="summary-card">
+            <span class="summary-label">NOESY Peaks</span>
+            <strong id="nmrp-noesy-summary">-</strong>
+          </div>
+          <div class="summary-card">
             <span class="summary-label">Method</span>
             <strong>group first, then shift heuristics</strong>
           </div>
@@ -104,6 +108,7 @@
           <button id="nmrp-carbon-tab" class="chip" type="button">13C NMR</button>
           <button id="nmrp-hsqc-tab" class="chip" type="button">HSQC</button>
           <button id="nmrp-cosy-tab" class="chip" type="button">COSY</button>
+          <button id="nmrp-noesy-tab" class="chip" type="button">NOESY</button>
           <button id="nmrp-download-csv" class="chip" type="button">Download CSV</button>
           <button id="nmrp-zoom-in" class="chip" type="button">Zoom In</button>
           <button id="nmrp-zoom-out" class="chip" type="button">Zoom Out</button>
