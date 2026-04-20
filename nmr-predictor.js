@@ -13,8 +13,7 @@ const NMRP = {
   carbonTab: document.getElementById("nmrp-carbon-tab"),
   zoomIn: document.getElementById("nmrp-zoom-in"),
   zoomOut: document.getElementById("nmrp-zoom-out"),
-  resetZoom: document.getElementById("nmrp-reset-zoom"),
-  splittingMode: document.getElementById("nmrp-splitting-mode")
+  resetZoom: document.getElementById("nmrp-reset-zoom")
 };
 
 const ATOM_RE = /Cl|Br|[BCNOFPSIbcnops]/;
@@ -263,6 +262,37 @@ function adjacentHydrogens(graph, atom) {
     .reduce((sum, { atom: n }) => sum + n.hydrogens, 0);
 }
 
+function adjacentHydrogenEnvironments(graph, atom) {
+  if (atom.element !== "C") {
+    return [];
+  }
+  const groups = new Map();
+  neighbors(graph, atom)
+    .filter(({ atom: n, bond }) => n.element === "C" && bond.order === 1 && n.hydrogens > 0)
+    .forEach(({ atom: n, bond }) => {
+      const key = atomFeatureKey(graph, n);
+      const current = groups.get(key) || { count: 0, atomIds: [], jHz: estimateJHz(graph, atom, n, bond) };
+      current.count += n.hydrogens;
+      current.atomIds.push(n.id + 1);
+      groups.set(key, current);
+    });
+  return Array.from(groups.values())
+    .sort((a, b) => b.count - a.count || a.atomIds[0] - b.atomIds[0])
+    .slice(0, 3);
+}
+
+function estimateJHz(graph, atom, neighbour, bond) {
+  if (bond.order !== 1) return 0;
+  if (atom.aromatic || neighbour.aromatic) return 7.5;
+  if (isAlkeneCarbon(graph, atom) || isAlkeneCarbon(graph, neighbour)) return 7.0;
+  return 7.0;
+}
+
+function multiplicityFromEnvironments(environments) {
+  if (!environments.length) return "s";
+  return environments.map((environment) => multiplicityLabel(environment.count)).join("");
+}
+
 function shortestPathDistances(graph, sourceId) {
   const distances = Array(graph.atoms.length).fill(Infinity);
   const queue = [sourceId];
@@ -300,7 +330,7 @@ function classifyFunctionalGroups(graph) {
       groups.push({ type: "carbonyl", atomId: atom.id, effectH: 0.65, effectC: 10 });
     }
     if (atom.element === "O") {
-      groups.push({ type: "alcohol/ether O", atomId: atom.id, effectH: 0.75, effectC: 18 });
+      groups.push({ type: "alcohol/ether O", atomId: atom.id, effectH: 0.55, effectC: 18 });
     }
     if (atom.element === "N") {
       groups.push({ type: "amine N", atomId: atom.id, effectH: 0.42, effectC: 10 });
@@ -379,7 +409,10 @@ function baseProtonShift(graph, atom) {
     if (neighbors(graph, atom).some(({ atom: n }) => isCarboxylCarbon(graph, n))) {
       return { ppm: 11.4, label: "acid OH base range 10-13", broad: true };
     }
-    return { ppm: 2.7, label: "exchangeable alcohol/phenol OH", broad: true };
+    if (neighbors(graph, atom).some(({ atom: n }) => n.aromatic)) {
+      return { ppm: 5.6, label: "exchangeable phenol OH, often broad/variable", broad: true };
+    }
+    return { ppm: 4.8, label: "exchangeable alcohol OH, often broad/variable", broad: true };
   }
   if (atom.element === "N") return { ppm: 3.0, label: "exchangeable amine/amidic NH", broad: true };
   if (atom.element === "S") return { ppm: 2.0, label: "exchangeable thiol SH", broad: true };
@@ -390,7 +423,7 @@ function baseProtonShift(graph, atom) {
   if (neighbors(graph, atom).some(({ atom: n }) => n.aromatic)) return { ppm: 2.35, label: "benzylic C-H base range 1.8-3.0" };
   if (neighbors(graph, atom).some(({ bond }) => bond.order === 2)) return { ppm: 2.05, label: "allylic C-H base range 1.8-3.0" };
   if (neighbors(graph, atom).some(({ atom: n }) => ["O", "N"].includes(n.element) || HALOGENS.has(n.element))) {
-    return { ppm: 3.55, label: "alpha to O/N/X base range 3.0-4.5" };
+    return { ppm: 3.05, label: "alpha to O/N/X base range 3.0-4.5" };
   }
   const degree = carbonDegree(graph, atom);
   return { ppm: degree <= 1 ? 0.95 : degree === 2 ? 1.30 : 1.55, label: "alkyl sp3 C-H base range 0.9-1.7" };
@@ -510,15 +543,18 @@ function predictEnvironments(graph) {
       const base = baseProtonShift(graph, atom);
       if (base) {
         const correction = correctionForAtom(graph, atom, "1H", context);
-        const n = base.broad || NMRP.splittingMode.value === "beginner" ? 0 : adjacentHydrogens(graph, atom);
-        const environmentKey = `1H|${atomFeatureKey(graph, atom)}|n${n}|${base.broad ? "broad" : "sharp"}`;
+        const splitEnvironments = base.broad ? [] : adjacentHydrogenEnvironments(graph, atom);
+        const n = splitEnvironments.reduce((sum, environment) => sum + environment.count, 0);
+        const splitKey = splitEnvironments.map((environment) => `${environment.count}:${environment.atomIds.join(".")}:${environment.jHz.toFixed(1)}`).join("/");
+        const environmentKey = `1H|${atomFeatureKey(graph, atom)}|split:${splitKey}|${base.broad ? "broad" : "sharp"}`;
         protonItems.push({
           nucleus: "1H",
           atomIds: [atom.id + 1],
           rawPpm: clampShift(base.ppm + correction.ppm, "1H"),
           integration: atom.hydrogens,
-          multiplicity: base.broad ? "broad s" : multiplicityLabel(n),
+          multiplicity: base.broad ? "broad s" : multiplicityFromEnvironments(splitEnvironments),
           neighborH: n,
+          splitEnvironments,
           broad: Boolean(base.broad),
           environmentKey,
           signalId: `H-${stableHash(environmentKey).toString(16)}`,
@@ -569,16 +605,33 @@ function expandPeaks(environments, type) {
       peaks.push({ ppm: env.ppm, intensity: 1, env });
       return;
     }
-    const jPpm = env.broad ? 0.035 : 7 / 400;
-    const n = Math.max(0, Math.min(env.neighborH, 6));
-    const weights = env.broad ? [1] : binomialWeights(n);
-    const offsetCenter = (weights.length - 1) / 2;
-    weights.forEach((weight, index) => {
-      peaks.push({
-        ppm: env.ppm + (index - offsetCenter) * jPpm,
-        intensity: weight * env.integration,
-        env
+    let components = [{ offsetHz: 0, intensity: env.integration }];
+    const splitEnvironments = env.broad ? [] : (env.splitEnvironments || []).slice(0, 3);
+    splitEnvironments.forEach((splitEnvironment) => {
+      const weights = binomialWeights(Math.max(0, Math.min(splitEnvironment.count, 6)));
+      const center = (weights.length - 1) / 2;
+      const next = [];
+      components.forEach((component) => {
+        weights.forEach((weight, index) => {
+          next.push({
+            offsetHz: component.offsetHz + (index - center) * splitEnvironment.jHz,
+            intensity: component.intensity * weight
+          });
+        });
       });
+      components = next;
+    });
+    if (!components.length) {
+      components = [{ offsetHz: 0, intensity: env.integration }];
+    }
+    const merged = new Map();
+    components.forEach((component) => {
+      const ppm = env.ppm + component.offsetHz / 400;
+      const key = ppm.toFixed(5);
+      merged.set(key, (merged.get(key) || 0) + component.intensity);
+    });
+    Array.from(merged.entries()).forEach(([ppm, intensity]) => {
+      peaks.push({ ppm: Number(ppm), intensity, env });
     });
   });
   return peaks;
@@ -620,6 +673,8 @@ function renderSpectrum(environments, type) {
   const maxY = yValues.reduce((max, y) => Math.max(max, y), 0) || 1;
   const maxPeak = Math.max(...peaks.map((peak) => peak.intensity), 1);
   const visiblePeaks = peaks.filter((peak) => peak.ppm >= domain.min && peak.ppm <= domain.max);
+  const showTms = domain.min <= 0 && domain.max >= 0;
+  const tmsHeight = 14;
   const profileTrace = {
     x: xValues,
     y: yValues.map((y) => (y / maxY) * 100),
@@ -632,19 +687,34 @@ function renderSpectrum(environments, type) {
     name: "broadened profile"
   };
   const markerTrace = {
-    x: visiblePeaks.map((peak) => peak.ppm),
-    y: visiblePeaks.map((peak) => (peak.intensity / maxPeak) * 100),
+    x: [...visiblePeaks.map((peak) => peak.ppm), ...(showTms ? [0] : [])],
+    y: [...visiblePeaks.map((peak) => (peak.intensity / maxPeak) * 100), ...(showTms ? [tmsHeight] : [])],
     type: "scatter",
     mode: "markers",
     marker: {
-      color: visiblePeaks.map((peak) => peak.env.signalId === state.selectedSignalId ? "#a11d37" : color),
-      size: visiblePeaks.map((peak) => peak.env.signalId === state.selectedSignalId ? 11 : 7),
+      color: [...visiblePeaks.map((peak) => peak.env.signalId === state.selectedSignalId ? "#a11d37" : color), ...(showTms ? ["#56646f"] : [])],
+      size: [...visiblePeaks.map((peak) => peak.env.signalId === state.selectedSignalId ? 11 : 7), ...(showTms ? [7] : [])],
       line: { color: "#ffffff", width: 1 }
     },
-    customdata: visiblePeaks.map((peak) => peak.env.signalId),
-    text: visiblePeaks.map((peak) => `${peak.env.nucleus} ${peak.env.ppm.toFixed(2)} ppm<br>Atoms ${peak.env.atomIds.join(", ")}<br>${peak.env.label}`),
+    customdata: [...visiblePeaks.map((peak) => peak.env.signalId), ...(showTms ? [""] : [])],
+    text: [...visiblePeaks.map((peak) => `${peak.env.nucleus} ${peak.env.ppm.toFixed(2)} ppm (${peak.env.multiplicity})<br>Atoms ${peak.env.atomIds.join(", ")}<br>${multipletDetail(peak.env)}<br>${peak.env.label}`), ...(showTms ? ["TMS reference peak<br>0.00 ppm"] : [])],
     hovertemplate: "%{text}<extra></extra>",
     name: "clickable peaks"
+  };
+  const integralLabelTrace = {
+    x: type === "proton" ? environments.map((env) => env.ppm) : [],
+    y: type === "proton" ? environments.map((env) => {
+      const envPeaks = visiblePeaks.filter((peak) => peak.env.signalId === env.signalId);
+      const top = envPeaks.reduce((max, peak) => Math.max(max, (peak.intensity / maxPeak) * 100), 0);
+      return Math.min(106, top + 7);
+    }) : [],
+    type: "scatter",
+    mode: "text",
+    text: type === "proton" ? environments.map((env) => `${env.integration}H`) : [],
+    textfont: { color: "#18242d", size: 12 },
+    textposition: "top center",
+    hoverinfo: "skip",
+    name: "integrals"
   };
   const shapes = visiblePeaks.map((peak) => ({
     type: "line",
@@ -659,6 +729,26 @@ function renderSpectrum(environments, type) {
       width: peak.env.signalId === state.selectedSignalId ? 4 : type === "carbon" ? 2.2 : 1.4
     }
   }));
+  if (showTms) {
+    shapes.push({
+      type: "line",
+      xref: "x",
+      yref: "y",
+      x0: 0,
+      x1: 0,
+      y0: 0,
+      y1: tmsHeight,
+      line: { color: "#56646f", width: 1.6, dash: "dot" }
+    });
+  }
+  const annotations = showTms ? [{
+    x: 0,
+    y: tmsHeight + 5,
+    text: "TMS",
+    showarrow: false,
+    font: { size: 11, color: "#56646f" },
+    yanchor: "bottom"
+  }] : [];
   const layout = {
     autosize: true,
     margin: { t: 34, r: 22, b: 46, l: 42 },
@@ -667,6 +757,7 @@ function renderSpectrum(environments, type) {
     showlegend: false,
     dragmode: "zoom",
     shapes,
+    annotations,
     title: {
       text: `${type === "carbon" ? "13C" : "1H"} predicted spectrum`,
       x: 0.02,
@@ -694,7 +785,7 @@ function renderSpectrum(environments, type) {
     displaylogo: false,
     modeBarButtonsToRemove: ["lasso2d", "select2d", "autoScale2d"]
   };
-  window.Plotly.react(NMRP.spectrum, [profileTrace, markerTrace], layout, config).then(() => {
+  window.Plotly.react(NMRP.spectrum, [profileTrace, markerTrace, integralLabelTrace], layout, config).then(() => {
     NMRP.spectrum.removeAllListeners?.("plotly_click");
     NMRP.spectrum.removeAllListeners?.("plotly_relayout");
     NMRP.spectrum.on("plotly_click", (event) => {
@@ -713,6 +804,17 @@ function renderSpectrum(environments, type) {
 
 function bindPeakEvents() {
   // Plotly handles peak click binding in renderSpectrum.
+}
+
+function multipletDetail(signal) {
+  if (signal.nucleus !== "1H" || signal.broad) {
+    return signal.multiplicity;
+  }
+  const environments = signal.splitEnvironments || [];
+  if (!environments.length) {
+    return "singlet: no adjacent carbon-bound H";
+  }
+  return environments.map((environment, index) => `J${index + 1} ${environment.jHz.toFixed(1)} Hz to ${environment.count}H on atom(s) ${environment.atomIds.join(",")}`).join("; ");
 }
 
 function zoomSpectrum(factor, centerPpm = null) {
@@ -765,7 +867,7 @@ function renderAssignments() {
       <td>${item.ppm.toFixed(2)} ppm</td>
       <td>${item.nucleus === "1H" ? item.integration.toFixed(0) : item.atomIds.length.toFixed(0)}</td>
       <td>${item.multiplicity}</td>
-      <td>${item.label}</td>
+      <td>${item.label}${item.nucleus === "1H" ? `; ${multipletDetail(item)}` : ""}</td>
     </tr>
   `).join("");
   NMRP.table.querySelectorAll(".nmrp-assignment-row").forEach((row) => {
@@ -923,7 +1025,6 @@ NMRP.carbonTab.addEventListener("click", () => {
 NMRP.zoomIn.addEventListener("click", () => zoomSpectrum(0.5));
 NMRP.zoomOut.addEventListener("click", () => zoomSpectrum(2));
 NMRP.resetZoom.addEventListener("click", () => resetSpectrumZoom());
-NMRP.splittingMode.addEventListener("change", predictNmr);
 NMRP.spectrum.addEventListener("dblclick", () => resetSpectrumZoom());
 document.querySelectorAll(".nmr-example").forEach((button) => {
   button.addEventListener("click", () => {
