@@ -661,7 +661,7 @@ function renderSpectrum(environments, type) {
   const color = type === "carbon" ? DISPLAY_COLORS.carbon : DISPLAY_COLORS.proton;
   const peaks = expandPeaks(environments, type);
   const fwhm = type === "carbon" ? 0.55 : 0.0045;
-  const sampleCount = type === "carbon" ? 900 : 2400;
+  const sampleCount = type === "carbon" ? 1600 : 9000;
   const xValues = [];
   const yValues = [];
   Array.from({ length: sampleCount }, (_, index) => {
@@ -673,6 +673,10 @@ function renderSpectrum(environments, type) {
   const maxY = yValues.reduce((max, y) => Math.max(max, y), 0) || 1;
   const maxPeak = Math.max(...peaks.map((peak) => peak.intensity), 1);
   const visiblePeaks = peaks.filter((peak) => peak.ppm >= domain.min && peak.ppm <= domain.max);
+  const profileHeightAt = (ppm) => {
+    const y = peaks.reduce((sum, peak) => sum + peak.intensity * gaussian(ppm, peak.ppm, fwhm), 0);
+    return (y / maxY) * 100;
+  };
   const showTms = domain.min <= 0 && domain.max >= 0;
   const tmsHeight = 14;
   const profileTrace = {
@@ -688,7 +692,7 @@ function renderSpectrum(environments, type) {
   };
   const markerTrace = {
     x: [...visiblePeaks.map((peak) => peak.ppm), ...(showTms ? [0] : [])],
-    y: [...visiblePeaks.map((peak) => (peak.intensity / maxPeak) * 100), ...(showTms ? [tmsHeight] : [])],
+    y: [...visiblePeaks.map((peak) => profileHeightAt(peak.ppm)), ...(showTms ? [tmsHeight] : [])],
     type: "scatter",
     mode: "markers",
     marker: {
@@ -705,7 +709,7 @@ function renderSpectrum(environments, type) {
     x: type === "proton" ? environments.map((env) => env.ppm) : [],
     y: type === "proton" ? environments.map((env) => {
       const envPeaks = visiblePeaks.filter((peak) => peak.env.signalId === env.signalId);
-      const top = envPeaks.reduce((max, peak) => Math.max(max, (peak.intensity / maxPeak) * 100), 0);
+      const top = envPeaks.reduce((max, peak) => Math.max(max, profileHeightAt(peak.ppm)), 0);
       return Math.min(99, top + 5);
     }) : [],
     type: "scatter",
@@ -720,10 +724,10 @@ function renderSpectrum(environments, type) {
     type: "line",
     xref: "x",
     yref: "y",
-    x0: peak.ppm,
-    x1: peak.ppm,
-    y0: 0,
-    y1: (peak.intensity / maxPeak) * 100,
+      x0: peak.ppm,
+      x1: peak.ppm,
+      y0: 0,
+      y1: profileHeightAt(peak.ppm),
     line: {
       color: peak.env.signalId === state.selectedSignalId ? "#a11d37" : color,
       width: peak.env.signalId === state.selectedSignalId ? 4 : type === "carbon" ? 2.2 : 1.4
