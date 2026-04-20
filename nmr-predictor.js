@@ -1655,7 +1655,7 @@ function graphToMolblock(graph, coordinates) {
     lines.push(formatMolBondLine(bond.from, bond.to, bond.order));
   });
   lines.push("M  END");
-  return `${lines.join("\n")}\n$$$$`;
+  return lines.join("\n");
 }
 
 function getSpectrumFullscreenTarget() {
@@ -1722,19 +1722,35 @@ function tryRender3d(smiles) {
     });
   }
   const viewer = state.viewer3d;
-  viewer.clear();
   const coordinates = rdkitNoesyCoordinates(smiles, state.graph);
   const molblock = graphToMolblock(state.graph, coordinates);
-  let modelLoaded = false;
-  try {
-    viewer.addModel(molblock, "sdf");
-    modelLoaded = true;
-  } catch (error) {
-    modelLoaded = false;
+  const xyz = graphToXyz(state.graph, coordinates);
+  const candidates = [
+    { data: molblock, format: "mol" },
+    { data: `${molblock}\n$$$$`, format: "sdf" },
+    { data: xyz, format: "xyz" }
+  ];
+  let loaded = false;
+  for (const candidate of candidates) {
+    try {
+      viewer.clear();
+      const model = viewer.addModel(candidate.data, candidate.format);
+      if (typeof model?.selectedAtoms === "function") {
+        const atomCount = model.selectedAtoms({})?.length || 0;
+        if (atomCount <= 0) {
+          continue;
+        }
+      }
+      loaded = true;
+      break;
+    } catch (error) {
+      loaded = false;
+    }
   }
-  if (!modelLoaded) {
-    const xyz = graphToXyz(state.graph, coordinates);
-    viewer.addModel(xyz, "xyz");
+  if (!loaded) {
+    NMRP.structure3d.innerHTML = '<div class="plot-empty">Could not render 3D model for this structure.</div>';
+    state.viewer3d = null;
+    return;
   }
   viewer.setStyle({}, {
     stick: { radius: 0.17, colorscheme: "Jmol" },
