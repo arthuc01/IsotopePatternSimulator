@@ -13,7 +13,8 @@ const NMRP = {
   carbonTab: document.getElementById("nmrp-carbon-tab"),
   zoomIn: document.getElementById("nmrp-zoom-in"),
   zoomOut: document.getElementById("nmrp-zoom-out"),
-  resetZoom: document.getElementById("nmrp-reset-zoom")
+  resetZoom: document.getElementById("nmrp-reset-zoom"),
+  splittingMode: document.getElementById("nmrp-splitting-mode")
 };
 
 const ATOM_RE = /Cl|Br|[BCNOFPSIbcnops]/;
@@ -27,8 +28,19 @@ const state = {
   rdkit: null,
   jsme: null,
   activeSpectrum: "proton",
+  selectedSignalId: null,
   graph: null,
   predictions: { proton: [], carbon: [] },
+  signalSchema: {
+    nucleus: "1H | 13C",
+    signalId: "stable string",
+    ppm: "number",
+    atomIndices: "1-based heavy-atom indices",
+    integral: "1H integral; atom count for 13C",
+    multiplicity: "s, d, t, q, quint, m, broad s",
+    label: "short assignment explanation",
+    components: "expanded stick-spectrum components"
+  },
   defaultDomains: {
     proton: { min: 0, max: 12 },
     carbon: { min: 0, max: 220 }
@@ -230,12 +242,12 @@ function isAttachedToCarbonyl(graph, atom) {
   return neighbors(graph, atom).some(({ atom: n }) => isCarbonylCarbon(graph, n));
 }
 
-function isAlkeneCarbon(atom) {
-  return atom.element === "C" && atom.bonds.some((bond) => bond.order === 2);
+function isAlkeneCarbon(graph, atom) {
+  return atom.element === "C" && atom.bonds.some((bond) => bond.order === 2 && otherAtom(graph, bond, atom.id).element === "C");
 }
 
-function isAlkyneCarbon(atom) {
-  return atom.element === "C" && atom.bonds.some((bond) => bond.order === 3);
+function isAlkyneCarbon(graph, atom) {
+  return atom.element === "C" && atom.bonds.some((bond) => bond.order === 3 && otherAtom(graph, bond, atom.id).element === "C");
 }
 
 function carbonDegree(graph, atom) {
@@ -249,6 +261,180 @@ function adjacentHydrogens(graph, atom) {
   return neighbors(graph, atom)
     .filter(({ atom: n, bond }) => n.element === "C" && bond.order === 1)
     .reduce((sum, { atom: n }) => sum + n.hydrogens, 0);
+}
+
+function shortestPathDistances(graph, sourceId) {
+  const distances = Array(graph.atoms.length).fill(Infinity);
+  const queue = [sourceId];
+  distances[sourceId] = 0;
+  for (let index = 0; index < queue.length; index += 1) {
+    const atomId = queue[index];
+    for (const { atom } of neighbors(graph, graph.atoms[atomId])) {
+      if (distances[atom.id] === Infinity) {
+        distances[atom.id] = distances[atomId] + 1;
+        queue.push(atom.id);
+      }
+    }
+  }
+  return distances;
+}
+
+function computeDistanceMatrix(graph) {
+  // RDKit's GetDistanceMatrix is mirrored here as a small topological BFS matrix,
+  // because this static GitHub Pages app cannot run a Python RDKit backend.
+  return graph.atoms.map((atom) => shortestPathDistances(graph, atom.id));
+}
+
+function distanceWeight(distance) {
+  if (distance === 1) return 1.0;
+  if (distance === 2) return 0.45;
+  if (distance === 3) return 0.20;
+  if (distance >= 4 && distance < Infinity) return 0.05;
+  return 0;
+}
+
+function classifyFunctionalGroups(graph) {
+  const groups = [];
+  graph.atoms.forEach((atom) => {
+    if (isCarbonylCarbon(graph, atom)) {
+      groups.push({ type: "carbonyl", atomId: atom.id, effectH: 0.65, effectC: 10 });
+    }
+    if (atom.element === "O") {
+      groups.push({ type: "alcohol/ether O", atomId: atom.id, effectH: 0.75, effectC: 18 });
+    }
+    if (atom.element === "N") {
+      groups.push({ type: "amine N", atomId: atom.id, effectH: 0.42, effectC: 10 });
+    }
+    if (HALOGENS.has(atom.element)) {
+      groups.push({ type: "halogen", atomId: atom.id, effectH: 0.55, effectC: 14 });
+    }
+    if (atom.element === "C" && hasBondTo(graph, atom, "N", 3)) {
+      groups.push({ type: "nitrile", atomId: atom.id, effectH: 0.38, effectC: 8 });
+    }
+    if (atom.aromatic) {
+      groups.push({ type: "aromatic ring", atomId: atom.id, effectH: 0.08, effectC: 3 });
+    }
+    if (isAlkeneCarbon(graph, atom)) {
+      groups.push({ type: "alkene", atomId: atom.id, effectH: 0.25, effectC: 6 });
+    }
+  });
+  return groups;
+}
+
+function estimatePartialCharges(graph) {
+  // A compact Gasteiger-like teaching approximation: electronegative atoms pull
+  // charge from neighbours, and carbonyl/pi bonds add small polarization terms.
+  const electronegativity = { C: 2.55, H: 2.20, N: 3.04, O: 3.44, F: 3.98, Cl: 3.16, Br: 2.96, I: 2.66, S: 2.58, P: 2.19 };
+  const charges = Array(graph.atoms.length).fill(0);
+  graph.atoms.forEach((atom) => {
+    neighbors(graph, atom).forEach(({ atom: n, bond }) => {
+      if (atom.id > n.id) return;
+      const delta = ((electronegativity[n.element] || 2.5) - (electronegativity[atom.element] || 2.5)) * 0.035 * bond.order;
+      charges[atom.id] += delta;
+      charges[n.id] -= delta;
+    });
+  });
+  graph.atoms.forEach((atom) => {
+    if (isCarbonylCarbon(graph, atom)) {
+      charges[atom.id] += 0.08;
+      neighbors(graph, atom)
+        .filter(({ atom: n, bond }) => n.element === "O" && bond.order === 2)
+        .forEach(({ atom: oxygen }) => {
+          charges[oxygen.id] -= 0.08;
+        });
+    }
+  });
+  return charges;
+}
+
+function stableHash(text) {
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function atomFeatureKey(graph, atom) {
+  const neighbourBits = neighbors(graph, atom)
+    .map(({ atom: n, bond }) => `${n.element}${n.aromatic ? "ar" : ""}:${bond.order}:${n.hydrogens}`)
+    .sort()
+    .join(",");
+  return [
+    atom.element,
+    atom.aromatic ? "aromatic" : "aliphatic",
+    `H${atom.hydrogens}`,
+    `bo${bondOrderSum(atom).toFixed(1)}`,
+    `deg${carbonDegree(graph, atom)}`,
+    isCarbonylCarbon(graph, atom) ? "carbonyl" : "",
+    isAlkeneCarbon(graph, atom) ? "alkene" : "",
+    isAlkyneCarbon(graph, atom) ? "alkyne" : "",
+    neighbourBits
+  ].join("|");
+}
+
+function baseProtonShift(graph, atom) {
+  if (atom.element === "O") {
+    if (neighbors(graph, atom).some(({ atom: n }) => isCarboxylCarbon(graph, n))) {
+      return { ppm: 11.4, label: "acid OH base range 10-13", broad: true };
+    }
+    return { ppm: 2.7, label: "exchangeable alcohol/phenol OH", broad: true };
+  }
+  if (atom.element === "N") return { ppm: 3.0, label: "exchangeable amine/amidic NH", broad: true };
+  if (atom.element === "S") return { ppm: 2.0, label: "exchangeable thiol SH", broad: true };
+  if (isCarbonylCarbon(graph, atom) && atom.hydrogens > 0) return { ppm: 9.6, label: "aldehyde C-H base range 9.0-10.2" };
+  if (atom.aromatic) return { ppm: 7.25, label: "aromatic C-H base range 6.5-8.0" };
+  if (isAlkeneCarbon(graph, atom)) return { ppm: 5.45, label: "vinylic C-H base range 4.5-6.5" };
+  if (isAlkyneCarbon(graph, atom)) return { ppm: 2.35, label: "alkynyl C-H" };
+  if (neighbors(graph, atom).some(({ atom: n }) => n.aromatic)) return { ppm: 2.35, label: "benzylic C-H base range 1.8-3.0" };
+  if (neighbors(graph, atom).some(({ bond }) => bond.order === 2)) return { ppm: 2.05, label: "allylic C-H base range 1.8-3.0" };
+  if (neighbors(graph, atom).some(({ atom: n }) => ["O", "N"].includes(n.element) || HALOGENS.has(n.element))) {
+    return { ppm: 3.55, label: "alpha to O/N/X base range 3.0-4.5" };
+  }
+  const degree = carbonDegree(graph, atom);
+  return { ppm: degree <= 1 ? 0.95 : degree === 2 ? 1.30 : 1.55, label: "alkyl sp3 C-H base range 0.9-1.7" };
+}
+
+function baseCarbonShift(graph, atom) {
+  if (isCarbonylCarbon(graph, atom)) {
+    if (isCarboxylCarbon(graph, atom)) return { ppm: 172, label: "carboxyl/ester carbonyl base range 160-220" };
+    if (atom.hydrogens > 0) return { ppm: 198, label: "aldehyde carbonyl base range 160-220" };
+    return { ppm: 205, label: "ketone carbonyl base range 160-220" };
+  }
+  if (atom.aromatic || isAlkeneCarbon(graph, atom)) return { ppm: atom.aromatic ? 128 : 122, label: "alkene/aromatic sp2 base range 110-160" };
+  if (isAlkyneCarbon(graph, atom)) return { ppm: 78, label: "alkyne carbon" };
+  if (neighbors(graph, atom).some(({ atom: n }) => ["O", "N"].includes(n.element) || HALOGENS.has(n.element))) {
+    return { ppm: 58, label: "C attached to O/N/X base range 45-85" };
+  }
+  const degree = carbonDegree(graph, atom);
+  return { ppm: degree <= 1 ? 14 : degree === 2 ? 25 : degree === 3 ? 35 : 40, label: "alkyl sp3 base range 10-40" };
+}
+
+function correctionForAtom(graph, atom, nucleus, context) {
+  const { groups, distances, charges } = context;
+  let ppm = 0;
+  const labels = [];
+  groups.forEach((group) => {
+    const distance = distances[atom.id][group.atomId];
+    if (distance === 0) return;
+    const effect = nucleus === "1H" ? group.effectH : group.effectC;
+    const contribution = distanceWeight(distance) * effect;
+    if (Math.abs(contribution) >= 0.01) {
+      ppm += contribution;
+      if (distance <= 3) labels.push(`${group.type} d${distance}`);
+    }
+  });
+
+  const ownCharge = charges[atom.id] || 0;
+  const neighbourCharge = neighbors(graph, atom).reduce((sum, { atom: n }) => sum + (charges[n.id] || 0), 0) / Math.max(neighbors(graph, atom).length, 1);
+  ppm += nucleus === "1H" ? (ownCharge * 0.28 + neighbourCharge * 0.16) : (ownCharge * 5.5 + neighbourCharge * 2.0);
+
+  if (atom.aromatic) ppm += nucleus === "1H" ? 0.18 : 3.0;
+  if (neighbors(graph, atom).some(({ atom: n }) => n.aromatic || isAlkeneCarbon(graph, n))) {
+    ppm += nucleus === "1H" ? 0.10 : 1.5;
+  }
+  return { ppm, labels };
 }
 
 function binomialWeights(n) {
@@ -271,111 +457,103 @@ function multiplicityLabel(n) {
   return "m";
 }
 
-function protonRule(graph, atom) {
-  if (atom.element === "O") {
-    if (neighbors(graph, atom).some(({ atom: n }) => isCarboxylCarbon(graph, n))) {
-      return { shift: 11.2, reason: "carboxylic acid O-H", broad: true };
-    }
-    return { shift: 2.5, reason: "exchangeable O-H", broad: true };
-  }
-  if (atom.element === "N") return { shift: 3.5, reason: "exchangeable N-H", broad: true };
-  if (atom.element === "S") return { shift: 2.2, reason: "exchangeable S-H", broad: true };
-  if (atom.element !== "C") return null;
-  if (isCarbonylCarbon(graph, atom) && atom.hydrogens > 0) return { shift: 9.7, reason: "aldehyde C-H" };
-  if (atom.aromatic) return { shift: 7.25, reason: "aromatic C-H" };
-  if (isAlkeneCarbon(atom)) return { shift: 5.5, reason: "alkene C-H" };
-  if (isAlkyneCarbon(atom)) return { shift: 2.4, reason: "alkyne C-H" };
-  if (neighbors(graph, atom).some(({ atom: n }) => n.aromatic)) return { shift: 2.35, reason: "benzylic C-H" };
-  if (neighbors(graph, atom).some(({ bond }) => bond.order === 2)) return { shift: 2.0, reason: "allylic C-H" };
-  if (isAttachedToCarbonyl(graph, atom)) return { shift: 2.15, reason: "alpha to carbonyl" };
-  if (neighbors(graph, atom).some(({ atom: n }) => n.element === "O")) return { shift: 3.65, reason: "C-H next to oxygen" };
-  if (neighbors(graph, atom).some(({ atom: n }) => n.element === "N")) return { shift: 2.75, reason: "C-H next to nitrogen" };
-  if (neighbors(graph, atom).some(({ atom: n }) => HALOGENS.has(n.element))) return { shift: 3.35, reason: "C-H next to halogen" };
-  const degree = carbonDegree(graph, atom);
-  if (degree <= 1) return { shift: 0.95, reason: "primary alkyl" };
-  if (degree === 2) return { shift: 1.30, reason: "secondary alkyl" };
-  return { shift: 1.55, reason: "tertiary alkyl" };
-}
-
-function carbonRule(graph, atom) {
-  if (isCarbonylCarbon(graph, atom)) {
-    if (isCarboxylCarbon(graph, atom)) return { shift: 175, reason: "carboxyl/ester carbonyl" };
-    if (atom.hydrogens > 0) return { shift: 200, reason: "aldehyde carbonyl" };
-    return { shift: 205, reason: "ketone carbonyl" };
-  }
-  if (atom.aromatic) return { shift: 128, reason: "aromatic carbon" };
-  if (isAlkeneCarbon(atom)) return { shift: 125, reason: "alkene carbon" };
-  if (isAlkyneCarbon(atom)) return { shift: 78, reason: "alkyne carbon" };
-  if (neighbors(graph, atom).some(({ atom: n }) => n.element === "O")) return { shift: 62, reason: "carbon attached to oxygen" };
-  if (neighbors(graph, atom).some(({ atom: n }) => n.element === "N")) return { shift: 48, reason: "carbon attached to nitrogen" };
-  if (neighbors(graph, atom).some(({ atom: n }) => HALOGENS.has(n.element))) return { shift: 42, reason: "carbon attached to halogen" };
-  if (isAttachedToCarbonyl(graph, atom)) return { shift: 30, reason: "alpha carbonyl carbon" };
-  const degree = carbonDegree(graph, atom);
-  if (degree <= 1) return { shift: 14, reason: "primary alkyl carbon" };
-  if (degree === 2) return { shift: 25, reason: "secondary alkyl carbon" };
-  if (degree === 3) return { shift: 35, reason: "tertiary alkyl carbon" };
-  return { shift: 42, reason: "quaternary alkyl carbon" };
-}
-
-function groupKey(item) {
-  return `${item.kind}|${item.shift.toFixed(1)}|${item.reason}|${item.splitting}`;
-}
-
-function mergeEnvironments(items) {
+function mergeEnvironmentKeys(items) {
   const map = new Map();
   for (const item of items) {
-    const key = groupKey(item);
-    const current = map.get(key);
+    const current = map.get(item.environmentKey);
     if (current) {
       current.integration += item.integration;
       current.atomIds.push(...item.atomIds);
+      current.sourcePpm.push(item.rawPpm);
     } else {
-      map.set(key, { ...item, atomIds: [...item.atomIds] });
+      map.set(item.environmentKey, { ...item, atomIds: [...item.atomIds], sourcePpm: [item.rawPpm] });
     }
   }
-  return Array.from(map.values()).sort((a, b) => b.shift - a.shift);
+  const grouped = Array.from(map.values()).map((item) => ({
+    ...item,
+    ppm: item.sourcePpm.reduce((sum, value) => sum + value, 0) / item.sourcePpm.length
+  }));
+  return applyTieBreaking(grouped).sort((a, b) => b.ppm - a.ppm);
+}
+
+function applyTieBreaking(signals) {
+  const exactGroups = new Map();
+  signals.forEach((signal) => {
+    const key = `${signal.nucleus}|${signal.ppm.toFixed(4)}`;
+    const bucket = exactGroups.get(key) || [];
+    bucket.push(signal);
+    exactGroups.set(key, bucket);
+  });
+  exactGroups.forEach((bucket) => {
+    const uniqueKeys = new Set(bucket.map((signal) => signal.environmentKey));
+    if (uniqueKeys.size <= 1) return;
+    bucket.forEach((signal) => {
+      const offset = ((stableHash(signal.environmentKey) % 7) - 3) * 0.01;
+      signal.ppm += offset;
+      signal.label = `${signal.label}; tiny deterministic tie-break ${offset >= 0 ? "+" : ""}${offset.toFixed(2)} ppm`;
+    });
+  });
+  return signals;
 }
 
 function predictEnvironments(graph) {
+  const context = {
+    distances: computeDistanceMatrix(graph),
+    groups: classifyFunctionalGroups(graph),
+    charges: estimatePartialCharges(graph)
+  };
   const protonItems = [];
   const carbonItems = [];
 
   graph.atoms.forEach((atom) => {
     if (atom.hydrogens > 0 && ["C", "O", "N", "S"].includes(atom.element)) {
-      const rule = protonRule(graph, atom);
-      if (rule) {
-        const n = rule.broad ? 0 : adjacentHydrogens(graph, atom);
+      const base = baseProtonShift(graph, atom);
+      if (base) {
+        const correction = correctionForAtom(graph, atom, "1H", context);
+        const n = base.broad || NMRP.splittingMode.value === "beginner" ? 0 : adjacentHydrogens(graph, atom);
+        const environmentKey = `1H|${atomFeatureKey(graph, atom)}|n${n}|${base.broad ? "broad" : "sharp"}`;
         protonItems.push({
-          kind: "1H",
+          nucleus: "1H",
           atomIds: [atom.id + 1],
-          shift: rule.shift,
+          rawPpm: clampShift(base.ppm + correction.ppm, "1H"),
           integration: atom.hydrogens,
-          splitting: rule.broad ? "broad s" : multiplicityLabel(n),
+          multiplicity: base.broad ? "broad s" : multiplicityLabel(n),
           neighborH: n,
-          broad: Boolean(rule.broad),
-          reason: rule.reason
+          broad: Boolean(base.broad),
+          environmentKey,
+          signalId: `H-${stableHash(environmentKey).toString(16)}`,
+          label: [base.label, ...correction.labels].join("; ")
         });
       }
     }
     if (atom.element === "C") {
-      const rule = carbonRule(graph, atom);
+      const base = baseCarbonShift(graph, atom);
+      const correction = correctionForAtom(graph, atom, "13C", context);
+      const environmentKey = `13C|${atomFeatureKey(graph, atom)}`;
       carbonItems.push({
-        kind: "13C",
+        nucleus: "13C",
         atomIds: [atom.id + 1],
-        shift: rule.shift,
+        rawPpm: clampShift(base.ppm + correction.ppm, "13C"),
         integration: 1,
-        splitting: "s",
+        multiplicity: "s",
         neighborH: 0,
         broad: false,
-        reason: rule.reason
+        environmentKey,
+        signalId: `C-${stableHash(environmentKey).toString(16)}`,
+        label: [base.label, ...correction.labels].join("; ")
       });
     }
   });
 
   return {
-    proton: mergeEnvironments(protonItems),
-    carbon: mergeEnvironments(carbonItems)
+    proton: attachComponents(mergeEnvironmentKeys(protonItems), "proton"),
+    carbon: attachComponents(mergeEnvironmentKeys(carbonItems), "carbon")
   };
+}
+
+function clampShift(ppm, nucleus) {
+  if (nucleus === "13C") return Math.min(220, Math.max(0, ppm));
+  return Math.min(13, Math.max(0, ppm));
 }
 
 function gaussian(x, center, fwhm) {
@@ -388,7 +566,7 @@ function expandPeaks(environments, type) {
   const peaks = [];
   environments.forEach((env) => {
     if (type === "carbon") {
-      peaks.push({ ppm: env.shift, intensity: 1, env });
+      peaks.push({ ppm: env.ppm, intensity: 1, env });
       return;
     }
     const jPpm = env.broad ? 0.035 : 7 / 400;
@@ -397,13 +575,23 @@ function expandPeaks(environments, type) {
     const offsetCenter = (weights.length - 1) / 2;
     weights.forEach((weight, index) => {
       peaks.push({
-        ppm: env.shift + (index - offsetCenter) * jPpm,
+        ppm: env.ppm + (index - offsetCenter) * jPpm,
         intensity: weight * env.integration,
         env
       });
     });
   });
   return peaks;
+}
+
+function attachComponents(signals, type) {
+  return signals.map((signal) => {
+    const components = expandPeaks([signal], type).map((peak) => ({
+      ppm: Number(peak.ppm.toFixed(4)),
+      relativeIntensity: peak.intensity
+    }));
+    return { ...signal, components };
+  });
 }
 
 function renderSpectrum(environments, type) {
@@ -445,11 +633,22 @@ function renderSpectrum(environments, type) {
     }
     const x = xToPx(peak.ppm);
     const y = yToPx((peak.intensity / Math.max(...peaks.map((p) => p.intensity))) * maxY);
-    return `<line x1="${x.toFixed(2)}" y1="${margin.top + plotHeight}" x2="${x.toFixed(2)}" y2="${y.toFixed(2)}" stroke="${color}" stroke-width="${type === "carbon" ? 2.2 : 1.4}" opacity="0.75"></line>`;
+    const selected = peak.env.signalId === state.selectedSignalId;
+    return `<line class="nmrp-peak" data-signal-id="${peak.env.signalId}" x1="${x.toFixed(2)}" y1="${margin.top + plotHeight}" x2="${x.toFixed(2)}" y2="${y.toFixed(2)}" stroke="${selected ? "#a11d37" : color}" stroke-width="${selected ? 4 : type === "carbon" ? 2.2 : 1.4}" opacity="${selected ? 1 : 0.75}"><title>${peak.env.nucleus} ${peak.env.ppm.toFixed(2)} ppm, atoms ${peak.env.atomIds.join(", ")}</title></line>`;
   }).join("");
 
   const rangeText = `${domain.max.toFixed(type === "carbon" ? 0 : 2)} to ${domain.min.toFixed(type === "carbon" ? 0 : 2)} ppm`;
   NMRP.spectrum.innerHTML = `<svg class="plot-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none"><rect x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" rx="14" fill="rgba(255,255,255,0.72)"></rect>${ticks}<line x1="${margin.left}" y1="${margin.top + plotHeight}" x2="${margin.left + plotWidth}" y2="${margin.top + plotHeight}" stroke="#23343f"></line><line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + plotHeight}" stroke="#23343f"></line><polygon points="${fill}" fill="${type === "carbon" ? "rgba(217,115,13,0.14)" : "rgba(13,108,116,0.14)"}"></polygon><polyline points="${line}" fill="none" stroke="${color}" stroke-width="2.3" stroke-linejoin="round"></polyline>${sticks}<text x="${margin.left + plotWidth / 2}" y="${height - 2}" text-anchor="middle" font-size="12" fill="#18242d">Chemical shift (ppm)</text><text x="${margin.left + 8}" y="${margin.top + 14}" font-size="12" fill="#18242d">${type === "carbon" ? "13C" : "1H"} predicted spectrum</text><text x="${width - 24}" y="${margin.top + 14}" text-anchor="end" font-size="11" fill="#56646f">${rangeText}</text></svg>`;
+  bindPeakEvents();
+}
+
+function bindPeakEvents() {
+  NMRP.spectrum.querySelectorAll(".nmrp-peak").forEach((peak) => {
+    peak.addEventListener("click", (event) => {
+      event.stopPropagation();
+      selectSignal(peak.dataset.signalId);
+    });
+  });
 }
 
 function zoomSpectrum(factor, centerPpm = null) {
@@ -496,15 +695,18 @@ function renderAssignments() {
     return;
   }
   NMRP.table.innerHTML = all.map((item) => `
-    <tr>
-      <td>${item.kind}</td>
+    <tr class="nmrp-assignment-row ${item.signalId === state.selectedSignalId ? "is-selected" : ""}" data-signal-id="${item.signalId}">
+      <td>${item.nucleus}</td>
       <td>${item.atomIds.join(", ")}</td>
-      <td>${item.shift.toFixed(2)} ppm</td>
-      <td>${item.kind === "1H" ? item.integration.toFixed(0) : item.atomIds.length.toFixed(0)}</td>
-      <td>${item.splitting}</td>
-      <td>${item.reason}</td>
+      <td>${item.ppm.toFixed(2)} ppm</td>
+      <td>${item.nucleus === "1H" ? item.integration.toFixed(0) : item.atomIds.length.toFixed(0)}</td>
+      <td>${item.multiplicity}</td>
+      <td>${item.label}</td>
     </tr>
   `).join("");
+  NMRP.table.querySelectorAll(".nmrp-assignment-row").forEach((row) => {
+    row.addEventListener("click", () => selectSignal(row.dataset.signalId));
+  });
 }
 
 function renderActiveSpectrum() {
@@ -525,7 +727,19 @@ function tryRenderRdkit(smiles) {
     if (!mol) {
       throw new Error("RDKit could not parse SMILES.");
     }
-    NMRP.structure.innerHTML = mol.get_svg();
+    const selected = getSelectedSignal();
+    if (selected && mol.get_svg_with_highlights) {
+      const details = JSON.stringify({
+        atoms: selected.atomIds.map((id) => id - 1),
+        highlightColour: [0.85, 0.12, 0.22]
+      });
+      NMRP.structure.innerHTML = mol.get_svg_with_highlights(details);
+    } else {
+      NMRP.structure.innerHTML = mol.get_svg();
+    }
+    if (selected) {
+      NMRP.structure.insertAdjacentHTML("beforeend", `<div class="nmrp-highlight-note">Selected atoms: ${selected.atomIds.join(", ")}</div>`);
+    }
   } catch (error) {
     NMRP.structure.innerHTML = `<div class="plot-empty">${error.message}</div>`;
   } finally {
@@ -533,6 +747,19 @@ function tryRenderRdkit(smiles) {
       mol.delete();
     }
   }
+}
+
+function getSelectedSignal() {
+  return [...state.predictions.proton, ...state.predictions.carbon].find((signal) => signal.signalId === state.selectedSignalId) || null;
+}
+
+function selectSignal(signalId) {
+  state.selectedSignalId = signalId;
+  if (state.graph) {
+    tryRenderRdkit(NMRP.smiles.value.trim());
+  }
+  renderAssignments();
+  renderActiveSpectrum();
 }
 
 function predictNmr() {
@@ -546,6 +773,7 @@ function predictNmr() {
     const predictions = predictEnvironments(graph);
     state.graph = graph;
     state.predictions = predictions;
+    state.selectedSignalId = null;
     state.viewDomains = {
       proton: { ...state.defaultDomains.proton },
       carbon: { ...state.defaultDomains.carbon }
@@ -631,6 +859,7 @@ NMRP.carbonTab.addEventListener("click", () => {
 NMRP.zoomIn.addEventListener("click", () => zoomSpectrum(0.5));
 NMRP.zoomOut.addEventListener("click", () => zoomSpectrum(2));
 NMRP.resetZoom.addEventListener("click", () => resetSpectrumZoom());
+NMRP.splittingMode.addEventListener("change", predictNmr);
 NMRP.spectrum.addEventListener("wheel", (event) => {
   event.preventDefault();
   zoomSpectrum(event.deltaY > 0 ? 1.25 : 0.8, ppmFromPointer(event));

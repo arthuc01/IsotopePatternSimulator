@@ -616,6 +616,27 @@ output {
   height: 100%;
 }
 
+.nmrp-peak {
+  cursor: pointer;
+}
+
+.nmrp-assignment-row {
+  cursor: pointer;
+}
+
+.nmrp-assignment-row:hover,
+.nmrp-assignment-row.is-selected {
+  background: rgba(13, 108, 116, 0.10);
+}
+
+.nmrp-highlight-note {
+  width: 100%;
+  padding: 8px 12px 12px;
+  text-align: center;
+  font: 500 0.82rem "IBM Plex Mono", monospace;
+  color: #a11d37;
+}
+
 .table-wrap {
   overflow: auto;
 }

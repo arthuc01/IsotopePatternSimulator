@@ -58,6 +58,14 @@
           <button id="nmrp-draw-button" class="secondary-button" type="button">Send SMILES to JSME</button>
         </div>
 
+        <label class="field">
+          <span>Proton Splitting Mode</span>
+          <select id="nmrp-splitting-mode">
+            <option value="teaching" selected>Teaching n+1 splitting</option>
+            <option value="beginner">Beginner singlets only</option>
+          </select>
+        </label>
+
         <div id="nmrp-status" class="status-message" role="status" aria-live="polite"></div>
 
         <div id="jsme-container" class="jsme-container">
@@ -79,7 +87,7 @@
           </div>
           <div class="summary-card">
             <span class="summary-label">Method</span>
-            <strong>heuristic SMARTS-like rules</strong>
+            <strong>group first, then shift heuristics</strong>
           </div>
         </div>
       </section>
