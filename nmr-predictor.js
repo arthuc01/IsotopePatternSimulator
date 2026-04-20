@@ -98,6 +98,7 @@ function parseSmiles(smiles) {
   const rings = new Map();
   let current = null;
   let pendingBond = null;
+  let pendingStereo = null;
 
   const addAtom = (atom) => {
     atom.id = atoms.length;
@@ -106,13 +107,14 @@ function parseSmiles(smiles) {
     if (current !== null) {
       const previous = atoms[current];
       const order = defaultBondOrder(previous, atom, pendingBond);
-      const bond = { from: current, to: atom.id, order };
+      const bond = { from: current, to: atom.id, order, stereo: pendingStereo };
       bonds.push(bond);
       previous.bonds.push(bond);
       atom.bonds.push(bond);
     }
     current = atom.id;
     pendingBond = null;
+    pendingStereo = null;
   };
 
   for (let i = 0; i < smiles.length; i += 1) {
@@ -135,6 +137,7 @@ function parseSmiles(smiles) {
     }
     if (char === "-" || char === "/" || char === "\\") {
       pendingBond = 1;
+      pendingStereo = char === "-" ? null : char;
       continue;
     }
     if (/[0-9]/.test(char)) {
@@ -146,15 +149,16 @@ function parseSmiles(smiles) {
         const atom = atoms[current];
         const previous = atoms[ring.atomId];
         const order = defaultBondOrder(previous, atom, pendingBond || ring.bondOrder);
-        const bond = { from: ring.atomId, to: current, order };
+        const bond = { from: ring.atomId, to: current, order, stereo: pendingStereo || ring.stereo };
         bonds.push(bond);
         previous.bonds.push(bond);
         atom.bonds.push(bond);
         rings.delete(char);
       } else {
-        rings.set(char, { atomId: current, bondOrder: pendingBond });
+        rings.set(char, { atomId: current, bondOrder: pendingBond, stereo: pendingStereo });
       }
       pendingBond = null;
+      pendingStereo = null;
       continue;
     }
     if (char === "[") {
@@ -186,8 +190,65 @@ function parseSmiles(smiles) {
     throw new Error("Unclosed ring in SMILES.");
   }
 
+  perceiveKekuleAromaticRings(atoms, bonds);
   assignImplicitHydrogens(atoms);
   return { atoms, bonds };
+}
+
+function perceiveKekuleAromaticRings(atoms, bonds) {
+  const carbonIds = atoms.filter((atom) => atom.element === "C").map((atom) => atom.id);
+  const adjacency = new Map(carbonIds.map((id) => [id, []]));
+  bonds
+    .filter((bond) => [1, 1.5, 2].includes(bond.order) && atoms[bond.from].element === "C" && atoms[bond.to].element === "C")
+    .forEach((bond) => {
+      adjacency.get(bond.from)?.push(bond.to);
+      adjacency.get(bond.to)?.push(bond.from);
+    });
+  const seen = new Set();
+  const cycles = [];
+  const canonicalCycle = (cycle) => {
+    const rotations = cycle.map((_, index) => cycle.slice(index).concat(cycle.slice(0, index)).join("-"));
+    const reversed = [...cycle].reverse();
+    rotations.push(...reversed.map((_, index) => reversed.slice(index).concat(reversed.slice(0, index)).join("-")));
+    return rotations.sort()[0];
+  };
+
+  const visit = (start, current, path) => {
+    if (path.length === 6) {
+      if (adjacency.get(current)?.includes(start)) {
+        const key = canonicalCycle(path);
+        if (!seen.has(key)) {
+          seen.add(key);
+          cycles.push([...path]);
+        }
+      }
+      return;
+    }
+    adjacency.get(current)?.forEach((next) => {
+      if (next < start || path.includes(next)) return;
+      visit(start, next, [...path, next]);
+    });
+  };
+  carbonIds.forEach((start) => visit(start, start, [start]));
+
+  cycles.forEach((cycle) => {
+    const cycleBonds = cycle.map((from, index) => {
+      const to = cycle[(index + 1) % cycle.length];
+      return bonds.find((bond) => (bond.from === from && bond.to === to) || (bond.from === to && bond.to === from));
+    });
+    const doubleBondCount = cycleBonds.filter((bond) => bond?.order === 2).length;
+    const aromaticBondCount = cycleBonds.filter((bond) => bond?.order === 1.5).length;
+    const alternating = cycleBonds.every((bond, index) => bond.order !== cycleBonds[(index + 1) % cycleBonds.length].order);
+    const mixedAromatic = aromaticBondCount > 0 && doubleBondCount >= 2;
+    if (doubleBondCount !== 3 && !mixedAromatic) return;
+    if (!alternating && !mixedAromatic) return;
+    cycle.forEach((atomId) => {
+      atoms[atomId].aromatic = true;
+    });
+    cycleBonds.forEach((bond) => {
+      bond.order = 1.5;
+    });
+  });
 }
 
 function bondOrderSum(atom) {
@@ -249,6 +310,30 @@ function isAlkyneCarbon(graph, atom) {
   return atom.element === "C" && atom.bonds.some((bond) => bond.order === 3 && otherAtom(graph, bond, atom.id).element === "C");
 }
 
+function isAcyloxyOxygen(graph, atom) {
+  return atom.element === "O" && neighbors(graph, atom).some(({ atom: n }) => isCarbonylCarbon(graph, n));
+}
+
+function isBenzylicCarbon(graph, atom) {
+  return atom.element === "C" && !atom.aromatic && neighbors(graph, atom).some(({ atom: n }) => n.aromatic);
+}
+
+function isBetaToAromaticCarbon(graph, atom) {
+  return atom.element === "C" && !atom.aromatic && neighbors(graph, atom).some(({ atom: n }) => isBenzylicCarbon(graph, n));
+}
+
+function isCyclopentadieneMethylene(graph, atom) {
+  if (atom.element !== "C" || atom.aromatic || atom.hydrogens !== 2) return false;
+  const carbonNeighbours = neighbors(graph, atom).filter(({ atom: n }) => n.element === "C");
+  return carbonNeighbours.length === 2 && carbonNeighbours.every(({ atom: n, bond }) => bond.order === 1 && isAlkeneCarbon(graph, n));
+}
+
+function isCyclopentadieneVinylic(graph, atom) {
+  if (atom.element !== "C" || atom.aromatic || atom.hydrogens !== 1 || !isAlkeneCarbon(graph, atom)) return null;
+  const nextToMethylene = neighbors(graph, atom).some(({ atom: n }) => isCyclopentadieneMethylene(graph, n));
+  return nextToMethylene ? "outer" : "inner";
+}
+
 function carbonDegree(graph, atom) {
   return neighbors(graph, atom).filter(({ atom: n }) => n.element === "C").length;
 }
@@ -271,12 +356,13 @@ function adjacentHydrogenEnvironments(graph, atom) {
   }
   const groups = new Map();
   neighbors(graph, atom)
-    .filter(({ atom: n, bond }) => n.element === "C" && bond.order === 1 && n.hydrogens > 0)
+    .filter(({ atom: n, bond }) => n.element === "C" && n.hydrogens > 0 && (bond.order === 1 || (bond.order === 2 && isAlkeneCarbon(graph, atom) && isAlkeneCarbon(graph, n))))
     .forEach(({ atom: n, bond }) => {
       const key = atomFeatureKey(graph, n);
-      const current = groups.get(key) || { count: 0, atomIds: [], jHz: estimateJHz(graph, atom, n, bond) };
+      const current = groups.get(key) || { count: 0, atomIds: [], hydrogenCounts: [], jHz: estimateJHz(graph, atom, n, bond) };
       current.count += n.hydrogens;
       current.atomIds.push(n.id + 1);
+      current.hydrogenCounts.push({ atomId: n.id + 1, count: n.hydrogens });
       groups.set(key, current);
     });
   return Array.from(groups.values())
@@ -285,28 +371,56 @@ function adjacentHydrogenEnvironments(graph, atom) {
 }
 
 function aromaticHydrogenEnvironments(graph, atom) {
-  // Teaching approximation for aromatic splitting: keep only ortho coupling.
-  // Meta/para couplings are real but omitted here to keep spectra readable.
-  const distances = shortestPathDistances(graph, atom.id);
-  const orthoAtoms = graph.atoms
-    .filter((candidate) => candidate.id !== atom.id && candidate.element === "C" && candidate.aromatic && candidate.hydrogens > 0)
-    .filter((candidate) => distances[candidate.id] === 1);
-  if (!orthoAtoms.length) {
-    return [];
-  }
-  return [{
-    count: 1,
-    atomIds: orthoAtoms.map((candidate) => candidate.id + 1),
-    jHz: 8.0,
-    label: "ortho"
-  }];
+  // Teaching approximation: split only by H atoms on directly adjacent
+  // aromatic carbons, but keep non-equivalent adjacent environments separate.
+  const groups = new Map();
+  neighbors(graph, atom)
+    .filter(({ atom: n }) => n.element === "C" && n.aromatic && n.hydrogens > 0)
+    .forEach(({ atom: n }) => {
+      const key = radiusEnvironmentKey(graph, n, 3);
+      const current = groups.get(key) || { count: 0, atomIds: [], hydrogenCounts: [], jHz: 8.0, label: "adjacent aromatic" };
+      current.count += n.hydrogens;
+      current.atomIds.push(n.id + 1);
+      current.hydrogenCounts.push({ atomId: n.id + 1, count: n.hydrogens });
+      groups.set(key, current);
+    });
+  const environments = Array.from(groups.values())
+    .sort((a, b) => b.count - a.count || a.atomIds[0] - b.atomIds[0])
+    .slice(0, 3);
+  return environments.map((environment, index) => ({
+    ...environment,
+    jHz: environments.length > 1 ? 8.0 - index * 0.8 : 8.0
+  }));
 }
 
 function estimateJHz(graph, atom, neighbour, bond) {
+  if (bond.order === 2 && isAlkeneCarbon(graph, atom) && isAlkeneCarbon(graph, neighbour)) {
+    return alkeneCouplingJHz(graph, bond);
+  }
   if (bond.order !== 1) return 0;
   if (atom.aromatic || neighbour.aromatic) return 7.5;
   if (isAlkeneCarbon(graph, atom) || isAlkeneCarbon(graph, neighbour)) return 7.0;
   return 7.0;
+}
+
+function alkeneCouplingJHz(graph, doubleBond) {
+  const stereoClass = alkeneStereoClass(graph, doubleBond);
+  if (stereoClass === "trans") return 16.0;
+  if (stereoClass === "cis") return 10.0;
+  return 12.0;
+}
+
+function alkeneStereoClass(graph, doubleBond) {
+  const leftStereo = alkeneStereoMarkerAt(graph, doubleBond.from, doubleBond);
+  const rightStereo = alkeneStereoMarkerAt(graph, doubleBond.to, doubleBond);
+  if (!leftStereo || !rightStereo) return "unspecified";
+  return leftStereo === rightStereo ? "trans" : "cis";
+}
+
+function alkeneStereoMarkerAt(graph, atomId, doubleBond) {
+  const atom = graph.atoms[atomId];
+  const stereoBond = atom.bonds.find((bond) => bond !== doubleBond && bond.order === 1 && bond.stereo);
+  return stereoBond?.stereo || null;
 }
 
 function multiplicityFromEnvironments(environments) {
@@ -440,20 +554,28 @@ function radiusEnvironmentKey(graph, atom, radius = 3) {
 function baseProtonShift(graph, atom) {
   if (atom.element === "O") {
     if (neighbors(graph, atom).some(({ atom: n }) => isCarboxylCarbon(graph, n))) {
-      return { ppm: 11.4, label: "acid OH base range 10-13", broad: true };
+      return { ppm: 11.0, label: "acid OH base range 10-13", broad: true };
     }
     if (neighbors(graph, atom).some(({ atom: n }) => n.aromatic)) {
-      return { ppm: 5.6, label: "exchangeable phenol OH, often broad/variable", broad: true };
+      return { ppm: 8.7, label: "exchangeable phenol OH, often broad/variable near 9 ppm", broad: true };
     }
     return { ppm: 4.8, label: "exchangeable alcohol OH, often broad/variable", broad: true };
   }
   if (atom.element === "N") return { ppm: 3.0, label: "exchangeable amine/amidic NH", broad: true };
   if (atom.element === "S") return { ppm: 2.0, label: "exchangeable thiol SH", broad: true };
+  if (isCyclopentadieneMethylene(graph, atom)) return { ppm: 2.90, label: "cyclopentadiene CH2" };
+  const cyclopentadienePosition = isCyclopentadieneVinylic(graph, atom);
+  if (cyclopentadienePosition) {
+    return { ppm: cyclopentadienePosition === "inner" ? 6.50 : 6.40, label: "cyclopentadiene vinylic CH" };
+  }
   if (isCarbonylCarbon(graph, atom) && atom.hydrogens > 0) return { ppm: 9.6, label: "aldehyde C-H base range 9.0-10.2" };
   if (atom.aromatic) return { ppm: 7.25, label: "aromatic C-H base range 6.5-8.0" };
   if (isAlkeneCarbon(graph, atom)) return { ppm: 5.45, label: "vinylic C-H base range 4.5-6.5" };
   if (isAlkyneCarbon(graph, atom)) return { ppm: 2.35, label: "alkynyl C-H" };
-  if (neighbors(graph, atom).some(({ atom: n }) => n.aromatic)) return { ppm: 2.35, label: "benzylic C-H base range 1.8-3.0" };
+  if (isBenzylicCarbon(graph, atom)) {
+    const ppm = atom.hydrogens >= 3 ? 2.30 : atom.hydrogens === 2 ? 2.65 : 2.80;
+    return { ppm, label: "benzylic C-H base range 1.8-3.0" };
+  }
   if (neighbors(graph, atom).some(({ bond }) => bond.order === 2)) return { ppm: 2.05, label: "allylic C-H base range 1.8-3.0" };
   if (neighbors(graph, atom).some(({ atom: n }) => ["O", "N"].includes(n.element) || HALOGENS.has(n.element))) {
     return { ppm: 3.05, label: "alpha to O/N/X base range 3.0-4.5" };
@@ -478,28 +600,84 @@ function baseCarbonShift(graph, atom) {
 }
 
 function correctionForAtom(graph, atom, nucleus, context) {
+  if (nucleus === "1H" && (isCyclopentadieneMethylene(graph, atom) || isCyclopentadieneVinylic(graph, atom))) {
+    return { ppm: 0, labels: [] };
+  }
   const { groups, distances, charges } = context;
   let ppm = 0;
   const labels = [];
-  groups.forEach((group) => {
-    const distance = distances[atom.id][group.atomId];
-    if (distance === 0) return;
-    const effect = nucleus === "1H" ? group.effectH : group.effectC;
-    const contribution = distanceWeight(distance) * effect;
-    if (Math.abs(contribution) >= 0.01) {
-      ppm += contribution;
-      if (distance <= 3) labels.push(`${group.type} d${distance}`);
-    }
-  });
+  if (nucleus === "1H" && atom.aromatic) {
+    const aromaticCorrection = aromaticSubstituentCorrection(graph, atom, distances);
+    ppm += aromaticCorrection.ppm;
+    labels.push(...aromaticCorrection.labels);
+  } else {
+    groups.forEach((group) => {
+      const distance = distances[atom.id][group.atomId];
+      if (distance === 0) return;
+      if (nucleus === "1H" && isBenzylicCarbon(graph, atom) && ["aromatic ring", "alkene"].includes(group.type)) {
+        return;
+      }
+      if (nucleus === "1H" && isBetaToAromaticCarbon(graph, atom) && ["aromatic ring", "alkene"].includes(group.type)) {
+        return;
+      }
+      const effect = nucleus === "1H" ? group.effectH : group.effectC;
+      const contribution = distanceWeight(distance) * effect;
+      if (Math.abs(contribution) >= 0.01) {
+        ppm += contribution;
+        if (distance <= 3) labels.push(`${group.type} d${distance}`);
+      }
+    });
+  }
 
   const ownCharge = charges[atom.id] || 0;
   const neighbourCharge = neighbors(graph, atom).reduce((sum, { atom: n }) => sum + (charges[n.id] || 0), 0) / Math.max(neighbors(graph, atom).length, 1);
   ppm += nucleus === "1H" ? (ownCharge * 0.28 + neighbourCharge * 0.16) : (ownCharge * 5.5 + neighbourCharge * 2.0);
+  if (nucleus === "1H" && isBetaToAromaticCarbon(graph, atom)) ppm += 0.16;
 
   if (atom.aromatic) ppm += nucleus === "1H" ? 0.18 : 3.0;
   if (neighbors(graph, atom).some(({ atom: n }) => n.aromatic || isAlkeneCarbon(graph, n))) {
     ppm += nucleus === "1H" ? 0.10 : 1.5;
   }
+  return { ppm, labels };
+}
+
+function aromaticSubstituentCorrection(graph, atom, distances) {
+  let ppm = 0;
+  const labels = [];
+  graph.atoms
+    .filter((ringAtom) => ringAtom.aromatic)
+    .forEach((ringAtom) => {
+      const ringDistance = distances[atom.id][ringAtom.id];
+      if (!Number.isFinite(ringDistance) || ringDistance < 1 || ringDistance > 3) return;
+      neighbors(graph, ringAtom)
+        .filter(({ atom: substituent }) => !substituent.aromatic)
+        .forEach(({ atom: substituent }) => {
+          let effect = 0;
+          let label = "";
+          if (substituent.element === "O") {
+            const acyloxy = isAcyloxyOxygen(graph, substituent);
+            const effects = acyloxy
+              ? { 1: -0.15, 2: 0.00, 3: -0.05 }
+              : { 1: -0.65, 2: -0.25, 3: -0.60 };
+            effect = effects[ringDistance] || 0;
+            label = acyloxy ? "aryl acetate" : "aryl O";
+          } else if (isCarbonylCarbon(graph, substituent)) {
+            const effects = isCarboxylCarbon(graph, substituent)
+              ? { 1: 0.60, 2: 0.05, 3: 0.35 }
+              : { 1: 0.55, 2: 0.25, 3: 0.35 };
+            effect = effects[ringDistance] || 0;
+            label = isCarboxylCarbon(graph, substituent) ? "aryl carboxyl" : "aryl carbonyl";
+          } else if (substituent.element === "C") {
+            const effects = { 1: -0.32, 2: -0.30, 3: -0.34 };
+            effect = effects[ringDistance] || 0;
+            label = "aryl alkyl";
+          }
+          if (Math.abs(effect) >= 0.01) {
+            ppm += effect;
+            labels.push(`${label} ring d${ringDistance}`);
+          }
+        });
+    });
   return { ppm, labels };
 }
 
@@ -549,9 +727,14 @@ function normalizeSignalSplitting(signal) {
   const memberAtoms = new Set(signal.atomIds);
   const splitEnvironments = signal.splitEnvironments
     .map((environment) => {
-      const atomIds = environment.atomIds.filter((atomId) => !memberAtoms.has(atomId));
-      const count = environment.label === "ortho" ? 1 : environment.label ? atomIds.length : environment.count;
-      return { ...environment, atomIds, count };
+      const hydrogenCounts = environment.hydrogenCounts || environment.atomIds.map((atomId) => ({
+        atomId,
+        count: environment.label ? 1 : environment.count / Math.max(environment.atomIds.length, 1)
+      }));
+      const filteredCounts = hydrogenCounts.filter(({ atomId }) => !memberAtoms.has(atomId));
+      const atomIds = filteredCounts.map(({ atomId }) => atomId);
+      const count = filteredCounts.reduce((sum, item) => sum + item.count, 0);
+      return { ...environment, atomIds, hydrogenCounts: filteredCounts, count };
     })
     .filter((environment) => environment.count > 0);
   return {
