@@ -647,6 +647,24 @@ output {
   height: 100%;
 }
 
+.plot-panel:fullscreen,
+.plot-panel:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  margin: 0;
+  border-radius: 0;
+  padding: 18px;
+  overflow: auto;
+  background: #f4f7f9;
+}
+
+.plot-panel:fullscreen .nmrp-spectrum-area,
+.plot-panel:-webkit-full-screen .nmrp-spectrum-area {
+  min-height: 420px;
+  height: calc(100vh - 260px);
+}
+
 .nmrp-peak {
   cursor: pointer;
 }

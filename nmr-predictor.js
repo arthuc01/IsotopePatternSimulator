@@ -19,6 +19,7 @@ const NMRP = {
   cosyTab: document.getElementById("nmrp-cosy-tab"),
   noesyTab: document.getElementById("nmrp-noesy-tab"),
   caption: document.getElementById("nmrp-spectrum-caption"),
+  fullscreen: document.getElementById("nmrp-fullscreen"),
   downloadCsv: document.getElementById("nmrp-download-csv"),
   zoomIn: document.getElementById("nmrp-zoom-in"),
   zoomOut: document.getElementById("nmrp-zoom-out"),
@@ -1543,6 +1544,162 @@ function graphToXyz(graph, coordinates) {
   return lines.join("\n");
 }
 
+function vectorLength(vector) {
+  return Math.hypot(vector.x, vector.y, vector.z);
+}
+
+function normalizeVector(vector, fallback = { x: 1, y: 0, z: 0 }) {
+  const length = vectorLength(vector);
+  if (!Number.isFinite(length) || length < 1e-8) return { ...fallback };
+  return { x: vector.x / length, y: vector.y / length, z: vector.z / length };
+}
+
+function crossProduct(a, b) {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x
+  };
+}
+
+function estimateExchangeableHydrogenDirections(graph, atom, heavyCoordinates) {
+  const parent = heavyCoordinates[atom.id] || { x: 0, y: 0, z: 0 };
+  const neighbourVectors = neighbors(graph, atom)
+    .map(({ atom: n }) => heavyCoordinates[n.id])
+    .filter((point) => point && [point.x, point.y, point.z].every(Number.isFinite))
+    .map((point) => ({
+      x: point.x - parent.x,
+      y: point.y - parent.y,
+      z: point.z - parent.z
+    }))
+    .map((vector) => normalizeVector(vector))
+    .filter((vector) => Number.isFinite(vector.x) && Number.isFinite(vector.y) && Number.isFinite(vector.z));
+
+  const away = neighbourVectors.reduce((sum, vector) => ({
+    x: sum.x - vector.x,
+    y: sum.y - vector.y,
+    z: sum.z - vector.z
+  }), { x: 0, y: 0, z: 0 });
+  const primary = normalizeVector(away);
+  const helper = Math.abs(primary.z) < 0.9 ? { x: 0, y: 0, z: 1 } : { x: 0, y: 1, z: 0 };
+  const tangent = normalizeVector(crossProduct(primary, helper), { x: 0, y: 1, z: 0 });
+  const bitangent = normalizeVector(crossProduct(primary, tangent), { x: 0, y: 0, z: 1 });
+  const count = Math.max(1, atom.hydrogens || 1);
+
+  return Array.from({ length: count }, (_, index) => {
+    const angle = (index / count) * Math.PI * 2;
+    const mixed = {
+      x: primary.x + 0.36 * (Math.cos(angle) * tangent.x + Math.sin(angle) * bitangent.x),
+      y: primary.y + 0.36 * (Math.cos(angle) * tangent.y + Math.sin(angle) * bitangent.y),
+      z: primary.z + 0.36 * (Math.cos(angle) * tangent.z + Math.sin(angle) * bitangent.z)
+    };
+    return normalizeVector(mixed, primary);
+  });
+}
+
+function formatMolAtomLine(element, point) {
+  const x = point.x.toFixed(4).padStart(10);
+  const y = point.y.toFixed(4).padStart(10);
+  const z = point.z.toFixed(4).padStart(10);
+  const symbol = String(element || "C").slice(0, 3).padEnd(3, " ");
+  return `${x}${y}${z} ${symbol} 0  0  0  0  0  0  0  0  0  0  0  0`;
+}
+
+function formatMolBondLine(fromIndex, toIndex, order = 1) {
+  return `${String(fromIndex).padStart(3)}${String(toIndex).padStart(3)}${String(order).padStart(3)}  0  0  0  0`;
+}
+
+function graphToMolblock(graph, coordinates) {
+  const heavyAtoms = graph.atoms.map((atom, index) => ({
+    element: atom.element,
+    point: coordinates[index] || { x: 0, y: 0, z: 0 }
+  }));
+  const atoms = [...heavyAtoms];
+  const bonds = graph.bonds.map((bond) => ({
+    from: bond.from + 1,
+    to: bond.to + 1,
+    order: bond.order >= 2.5 ? 3 : bond.order >= 1.5 ? 2 : 1
+  }));
+
+  graph.atoms.forEach((atom) => {
+    if (!["O", "N", "S"].includes(atom.element) || !Number.isFinite(atom.hydrogens) || atom.hydrogens <= 0) {
+      return;
+    }
+    const parent = coordinates[atom.id] || { x: 0, y: 0, z: 0 };
+    const directions = estimateExchangeableHydrogenDirections(graph, atom, coordinates);
+    const bondLength = atom.element === "S" ? 1.34 : 1.01;
+    directions.slice(0, atom.hydrogens).forEach((direction) => {
+      const hydrogenPoint = {
+        x: parent.x + direction.x * bondLength,
+        y: parent.y + direction.y * bondLength,
+        z: parent.z + direction.z * bondLength
+      };
+      atoms.push({ element: "H", point: hydrogenPoint });
+      bonds.push({ from: atom.id + 1, to: atoms.length, order: 1 });
+    });
+  });
+
+  const atomCount = Math.min(999, atoms.length);
+  const bondCount = Math.min(999, bonds.length);
+  const lines = [
+    "NMR Predictor 3D model",
+    "  NMRPRED",
+    "Teaching geometry with explicit bonds",
+    `${String(atomCount).padStart(3)}${String(bondCount).padStart(3)}  0  0  0  0  0  0  0  0  0  0  0  0  0  0 V2000`
+  ];
+
+  atoms.slice(0, atomCount).forEach((atom) => {
+    lines.push(formatMolAtomLine(atom.element, atom.point));
+  });
+  bonds.slice(0, bondCount).forEach((bond) => {
+    lines.push(formatMolBondLine(bond.from, bond.to, bond.order));
+  });
+  lines.push("M  END");
+  return lines.join("\n");
+}
+
+function getSpectrumFullscreenTarget() {
+  return NMRP.spectrum?.closest(".plot-panel") || NMRP.spectrum;
+}
+
+function isSpectrumFullscreen() {
+  const target = getSpectrumFullscreenTarget();
+  return Boolean(target && (document.fullscreenElement === target || document.webkitFullscreenElement === target));
+}
+
+function refreshResizableViews() {
+  window.Plotly?.Plots?.resize?.(NMRP.spectrum);
+  state.viewer3d?.resize?.();
+  state.viewer3d?.render?.();
+}
+
+function updateFullscreenButtonLabel() {
+  if (!NMRP.fullscreen) return;
+  NMRP.fullscreen.textContent = isSpectrumFullscreen() ? "Exit Full Screen" : "Full Screen";
+}
+
+function toggleSpectrumFullscreen() {
+  const target = getSpectrumFullscreenTarget();
+  if (!target) return;
+  if (isSpectrumFullscreen()) {
+    if (document.exitFullscreen) {
+      document.exitFullscreen().catch(() => {
+        setPredictorStatus("Could not exit full screen mode.", true);
+      });
+    } else if (document.webkitExitFullscreen) {
+      document.webkitExitFullscreen();
+    }
+    return;
+  }
+  if (target.requestFullscreen) {
+    target.requestFullscreen().catch(() => {
+      setPredictorStatus("Fullscreen mode was blocked by the browser.", true);
+    });
+  } else if (target.webkitRequestFullscreen) {
+    target.webkitRequestFullscreen();
+  }
+}
+
 function selectedAtomIdsFromSignals() {
   const selectedSignals = getSelectedSignals();
   return dedupeSortedNumeric(selectedSignals.flatMap((signal) => signal.atomIds || []));
@@ -1567,8 +1724,8 @@ function tryRender3d(smiles) {
   const viewer = state.viewer3d;
   viewer.clear();
   const coordinates = rdkitNoesyCoordinates(smiles, state.graph);
-  const xyz = graphToXyz(state.graph, coordinates);
-  viewer.addModel(xyz, "xyz");
+  const molblock = graphToMolblock(state.graph, coordinates);
+  viewer.addModel(molblock, "mol");
   viewer.setStyle({}, {
     stick: { radius: 0.17, colorscheme: "Jmol" },
     sphere: { scale: 0.30, colorscheme: "Jmol" }
@@ -1903,6 +2060,24 @@ function render2DSpectrum(peaks, type) {
     hovertemplate: "%{text}<extra></extra>",
     name: `${type.toUpperCase()} diagonal`
   } : null;
+  const noesyLabelTrace = type === "noesy" ? {
+    x: cross.map((peak) => peak.x),
+    y: cross.map((peak) => peak.y),
+    type: "scatter",
+    mode: "text",
+    text: cross.map((peak) => {
+      const left = `H${(peak.atomIdsA || []).join("/")}`;
+      const right = `H${(peak.atomIdsB || []).join("/")}`;
+      return `${left}-${right}`;
+    }),
+    textposition: "top center",
+    textfont: {
+      size: 10,
+      color: "#5f2a16"
+    },
+    hoverinfo: "skip",
+    name: "NOESY labels"
+  } : null;
   const gaussianBlobTrace = type === "noesy" ? (() => {
     const x = Array.from({ length: 90 }, (_, index) => domains.x.min + ((domains.x.max - domains.x.min) * index) / 89);
     const y = Array.from({ length: 90 }, (_, index) => domains.y.min + ((domains.y.max - domains.y.min) * index) / 89);
@@ -1933,7 +2108,7 @@ function render2DSpectrum(peaks, type) {
       name: "NOESY blob"
     };
   })() : null;
-  const traces = [gaussianBlobTrace, crossTrace, diagonalTrace].filter(Boolean);
+  const traces = [gaussianBlobTrace, crossTrace, diagonalTrace, noesyLabelTrace].filter(Boolean);
   const yTitle = type === "hsqc" ? "13C shift (ppm)" : "1H shift (ppm)";
   const layout = {
     autosize: true,
@@ -2478,6 +2653,7 @@ NMRP.downloadCsv.addEventListener("click", exportActiveSpectrumCsv);
 NMRP.zoomIn.addEventListener("click", () => zoomSpectrum(0.5));
 NMRP.zoomOut.addEventListener("click", () => zoomSpectrum(2));
 NMRP.resetZoom.addEventListener("click", () => resetSpectrumZoom());
+NMRP.fullscreen?.addEventListener("click", toggleSpectrumFullscreen);
 NMRP.spectrum.addEventListener("dblclick", () => resetSpectrumZoom());
 document.querySelectorAll(".nmr-example").forEach((button) => {
   button.addEventListener("click", () => {
@@ -2487,8 +2663,19 @@ document.querySelectorAll(".nmr-example").forEach((button) => {
   });
 });
 window.addEventListener("resize", renderActiveSpectrum);
+if (document.addEventListener) {
+  document.addEventListener("fullscreenchange", () => {
+    updateFullscreenButtonLabel();
+    window.setTimeout(refreshResizableViews, 40);
+  });
+  document.addEventListener("webkitfullscreenchange", () => {
+    updateFullscreenButtonLabel();
+    window.setTimeout(refreshResizableViews, 40);
+  });
+}
 
 window.addEventListener("load", () => {
   initialiseJsme();
   initialiseRdkit().then(predictNmr);
+  updateFullscreenButtonLabel();
 });
