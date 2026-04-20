@@ -1655,7 +1655,7 @@ function graphToMolblock(graph, coordinates) {
     lines.push(formatMolBondLine(bond.from, bond.to, bond.order));
   });
   lines.push("M  END");
-  return lines.join("\n");
+  return `${lines.join("\n")}\n$$$$`;
 }
 
 function getSpectrumFullscreenTarget() {
@@ -1725,7 +1725,17 @@ function tryRender3d(smiles) {
   viewer.clear();
   const coordinates = rdkitNoesyCoordinates(smiles, state.graph);
   const molblock = graphToMolblock(state.graph, coordinates);
-  viewer.addModel(molblock, "mol");
+  let modelLoaded = false;
+  try {
+    viewer.addModel(molblock, "sdf");
+    modelLoaded = true;
+  } catch (error) {
+    modelLoaded = false;
+  }
+  if (!modelLoaded) {
+    const xyz = graphToXyz(state.graph, coordinates);
+    viewer.addModel(xyz, "xyz");
+  }
   viewer.setStyle({}, {
     stick: { radius: 0.17, colorscheme: "Jmol" },
     sphere: { scale: 0.30, colorscheme: "Jmol" }
@@ -2031,7 +2041,11 @@ function render2DSpectrum(peaks, type) {
   });
   const markerText = cross.map((peak) => {
     if (type !== "noesy") return peak.label;
-    return `${peak.label}<br>distance ${peak.distance.toFixed(2)} Å; relative volume ${peak.volume.toFixed(3)}`;
+    const ppmA = Number.isFinite(peak.x) ? peak.x.toFixed(2) : "?";
+    const ppmB = Number.isFinite(peak.y) ? peak.y.toFixed(2) : "?";
+    const atomsA = (peak.atomIdsA || []).join(",");
+    const atomsB = (peak.atomIdsB || []).join(",");
+    return `H${atomsA} (${ppmA} ppm) ↔ H${atomsB} (${ppmB} ppm)<br>distance ${peak.distance.toFixed(2)} Å; relative volume ${peak.volume.toFixed(3)}`;
   });
   const crossTrace = {
     x: cross.map((peak) => peak.x),
@@ -2059,24 +2073,6 @@ function render2DSpectrum(peaks, type) {
     text: diagonal.map((peak) => peak.label),
     hovertemplate: "%{text}<extra></extra>",
     name: `${type.toUpperCase()} diagonal`
-  } : null;
-  const noesyLabelTrace = type === "noesy" ? {
-    x: cross.map((peak) => peak.x),
-    y: cross.map((peak) => peak.y),
-    type: "scatter",
-    mode: "text",
-    text: cross.map((peak) => {
-      const left = `H${(peak.atomIdsA || []).join("/")}`;
-      const right = `H${(peak.atomIdsB || []).join("/")}`;
-      return `${left}-${right}`;
-    }),
-    textposition: "top center",
-    textfont: {
-      size: 10,
-      color: "#5f2a16"
-    },
-    hoverinfo: "skip",
-    name: "NOESY labels"
   } : null;
   const gaussianBlobTrace = type === "noesy" ? (() => {
     const x = Array.from({ length: 90 }, (_, index) => domains.x.min + ((domains.x.max - domains.x.min) * index) / 89);
@@ -2108,7 +2104,7 @@ function render2DSpectrum(peaks, type) {
       name: "NOESY blob"
     };
   })() : null;
-  const traces = [gaussianBlobTrace, crossTrace, diagonalTrace, noesyLabelTrace].filter(Boolean);
+  const traces = [gaussianBlobTrace, crossTrace, diagonalTrace].filter(Boolean);
   const yTitle = type === "hsqc" ? "13C shift (ppm)" : "1H shift (ppm)";
   const layout = {
     autosize: true,
