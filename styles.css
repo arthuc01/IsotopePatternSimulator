@@ -608,6 +608,12 @@ output {
   cursor: crosshair;
 }
 
+.nmrp-spectrum-caption {
+  margin: 2px 0 10px;
+  font: 500 0.82rem "IBM Plex Mono", monospace;
+  color: #41515d;
+}
+
 .nmrp-spectrum-area .plot-svg {
   height: 100%;
 }

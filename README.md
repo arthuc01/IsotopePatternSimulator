@@ -15,6 +15,19 @@ Static web app for isotopic pattern simulation from molecular formula input.
 
 Open [index.html](./index.html) in a browser, or serve the repository with any static file server.
 
+## Smoke tests
+
+Run:
+
+```bash
+npm test
+
+# or run individual suites:
+node tests/nmr-predictor-smoke.test.js
+node tests/nmr-predictor-aromatic-trends.test.js
+node tests/nmr-predictor-parser-edgecases.test.js
+```
+
 ## Deploy to GitHub Pages
 
 1. Push the repository to GitHub.

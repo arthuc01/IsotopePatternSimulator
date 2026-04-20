@@ -11,7 +11,7 @@
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <script src="https://unpkg.com/@rdkit/rdkit/dist/RDKit_minimal.js"></script>
   <script src="https://jsme-editor.github.io/dist/jsme/jsme.nocache.js"></script>
-  <script src="nmr-predictor.js?v=20260420c" defer></script>
+  <script src="nmr-predictor.js?v=20260420h" defer></script>
 </head>
 <body>
   <div class="page-shell">
@@ -79,6 +79,14 @@
             <strong id="nmrp-carbon-summary">-</strong>
           </div>
           <div class="summary-card">
+            <span class="summary-label">HSQC Peaks</span>
+            <strong id="nmrp-hsqc-summary">-</strong>
+          </div>
+          <div class="summary-card">
+            <span class="summary-label">COSY Peaks</span>
+            <strong id="nmrp-cosy-summary">-</strong>
+          </div>
+          <div class="summary-card">
             <span class="summary-label">Method</span>
             <strong>group first, then shift heuristics</strong>
           </div>
@@ -88,16 +96,20 @@
       <section class="panel plot-panel">
         <div class="panel-heading">
           <h2>Predicted Spectra</h2>
-          <p>Switch between proton and carbon spectra. Proton splitting uses a simple n+1 rule from adjacent carbon-bound hydrogens.</p>
+          <p>Switch between proton and carbon spectra. Proton splitting uses a simple n+1 rule from adjacent carbon-bound hydrogens and does not model geminal/long-range couplings.</p>
         </div>
 
         <div class="plot-toolbar">
           <button id="nmrp-proton-tab" class="chip nav-link-active" type="button">1H NMR</button>
           <button id="nmrp-carbon-tab" class="chip" type="button">13C NMR</button>
+          <button id="nmrp-hsqc-tab" class="chip" type="button">HSQC</button>
+          <button id="nmrp-cosy-tab" class="chip" type="button">COSY</button>
+          <button id="nmrp-download-csv" class="chip" type="button">Download CSV</button>
           <button id="nmrp-zoom-in" class="chip" type="button">Zoom In</button>
           <button id="nmrp-zoom-out" class="chip" type="button">Zoom Out</button>
           <button id="nmrp-reset-zoom" class="chip" type="button">Reset Zoom</button>
         </div>
+        <p id="nmrp-spectrum-caption" class="nmrp-spectrum-caption">Switch between 1D and 2D teaching spectra.</p>
 
         <div id="nmrp-structure" class="nmrp-structure"></div>
         <div id="nmrp-spectrum" class="plot-area nmrp-spectrum-area" aria-label="Predicted NMR spectrum"></div>
