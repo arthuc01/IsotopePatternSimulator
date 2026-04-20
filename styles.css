@@ -603,8 +603,17 @@ output {
 }
 
 .nmrp-spectrum-area {
-  min-height: min(420px, calc(100vh - 260px));
-  height: min(420px, calc(100vh - 260px));
+  min-height: 280px;
+  height: clamp(280px, calc(100vh - 360px), 360px);
+  cursor: crosshair;
+}
+
+.nmrp-spectrum-area .plot-svg {
+  height: 100%;
+}
+
+.nmrp-spectrum-area .plot-empty {
+  height: 100%;
 }
 
 .table-wrap {

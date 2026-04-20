@@ -10,7 +10,10 @@ const NMRP = {
   spectrum: document.getElementById("nmrp-spectrum"),
   table: document.getElementById("nmrp-table-body"),
   protonTab: document.getElementById("nmrp-proton-tab"),
-  carbonTab: document.getElementById("nmrp-carbon-tab")
+  carbonTab: document.getElementById("nmrp-carbon-tab"),
+  zoomIn: document.getElementById("nmrp-zoom-in"),
+  zoomOut: document.getElementById("nmrp-zoom-out"),
+  resetZoom: document.getElementById("nmrp-reset-zoom")
 };
 
 const ATOM_RE = /Cl|Br|[BCNOFPSIbcnops]/;
@@ -25,7 +28,15 @@ const state = {
   jsme: null,
   activeSpectrum: "proton",
   graph: null,
-  predictions: { proton: [], carbon: [] }
+  predictions: { proton: [], carbon: [] },
+  defaultDomains: {
+    proton: { min: 0, max: 12 },
+    carbon: { min: 0, max: 220 }
+  },
+  viewDomains: {
+    proton: { min: 0, max: 12 },
+    carbon: { min: 0, max: 220 }
+  }
 };
 
 function setPredictorStatus(message, isError = false) {
@@ -402,7 +413,8 @@ function renderSpectrum(environments, type) {
   }
   const width = Math.max(NMRP.spectrum.clientWidth || 500, 360);
   const height = Math.max(NMRP.spectrum.clientHeight || 360, 300);
-  const domain = type === "carbon" ? { min: 0, max: 220 } : { min: 0, max: 12 };
+  const fullDomain = state.defaultDomains[type];
+  const domain = state.viewDomains[type] || fullDomain;
   const margin = { top: 22, right: 22, bottom: 46, left: 42 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
@@ -420,7 +432,7 @@ function renderSpectrum(environments, type) {
   const yToPx = (value) => margin.top + plotHeight - (value / maxY) * plotHeight;
   const line = values.map((point) => `${xToPx(point.ppm).toFixed(2)},${yToPx(point.y).toFixed(2)}`).join(" ");
   const fill = `${margin.left},${margin.top + plotHeight} ${line} ${margin.left + plotWidth},${margin.top + plotHeight}`;
-  const tickCount = type === "carbon" ? 11 : 7;
+  const tickCount = type === "carbon" ? 8 : 7;
   const ticks = Array.from({ length: tickCount }, (_, index) => {
     const frac = index / (tickCount - 1);
     const ppm = domain.max - frac * (domain.max - domain.min);
@@ -428,12 +440,53 @@ function renderSpectrum(environments, type) {
     return `<line x1="${x}" y1="${margin.top}" x2="${x}" y2="${margin.top + plotHeight}" stroke="rgba(24,36,45,0.08)"></line><text x="${x}" y="${height - 18}" text-anchor="middle" font-size="11" fill="#56646f">${ppm.toFixed(type === "carbon" ? 0 : 1)}</text>`;
   }).join("");
   const sticks = peaks.map((peak) => {
+    if (peak.ppm < domain.min || peak.ppm > domain.max) {
+      return "";
+    }
     const x = xToPx(peak.ppm);
     const y = yToPx((peak.intensity / Math.max(...peaks.map((p) => p.intensity))) * maxY);
     return `<line x1="${x.toFixed(2)}" y1="${margin.top + plotHeight}" x2="${x.toFixed(2)}" y2="${y.toFixed(2)}" stroke="${color}" stroke-width="${type === "carbon" ? 2.2 : 1.4}" opacity="0.75"></line>`;
   }).join("");
 
-  NMRP.spectrum.innerHTML = `<svg class="plot-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none"><rect x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" rx="14" fill="rgba(255,255,255,0.72)"></rect>${ticks}<line x1="${margin.left}" y1="${margin.top + plotHeight}" x2="${margin.left + plotWidth}" y2="${margin.top + plotHeight}" stroke="#23343f"></line><line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + plotHeight}" stroke="#23343f"></line><polygon points="${fill}" fill="${type === "carbon" ? "rgba(217,115,13,0.14)" : "rgba(13,108,116,0.14)"}"></polygon><polyline points="${line}" fill="none" stroke="${color}" stroke-width="2.3" stroke-linejoin="round"></polyline>${sticks}<text x="${margin.left + plotWidth / 2}" y="${height - 2}" text-anchor="middle" font-size="12" fill="#18242d">Chemical shift (ppm)</text><text x="${margin.left + 8}" y="${margin.top + 14}" font-size="12" fill="#18242d">${type === "carbon" ? "13C" : "1H"} predicted spectrum</text></svg>`;
+  const rangeText = `${domain.max.toFixed(type === "carbon" ? 0 : 2)} to ${domain.min.toFixed(type === "carbon" ? 0 : 2)} ppm`;
+  NMRP.spectrum.innerHTML = `<svg class="plot-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none"><rect x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" rx="14" fill="rgba(255,255,255,0.72)"></rect>${ticks}<line x1="${margin.left}" y1="${margin.top + plotHeight}" x2="${margin.left + plotWidth}" y2="${margin.top + plotHeight}" stroke="#23343f"></line><line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + plotHeight}" stroke="#23343f"></line><polygon points="${fill}" fill="${type === "carbon" ? "rgba(217,115,13,0.14)" : "rgba(13,108,116,0.14)"}"></polygon><polyline points="${line}" fill="none" stroke="${color}" stroke-width="2.3" stroke-linejoin="round"></polyline>${sticks}<text x="${margin.left + plotWidth / 2}" y="${height - 2}" text-anchor="middle" font-size="12" fill="#18242d">Chemical shift (ppm)</text><text x="${margin.left + 8}" y="${margin.top + 14}" font-size="12" fill="#18242d">${type === "carbon" ? "13C" : "1H"} predicted spectrum</text><text x="${width - 24}" y="${margin.top + 14}" text-anchor="end" font-size="11" fill="#56646f">${rangeText}</text></svg>`;
+}
+
+function zoomSpectrum(factor, centerPpm = null) {
+  const type = state.activeSpectrum;
+  const full = state.defaultDomains[type];
+  const current = state.viewDomains[type];
+  const span = current.max - current.min;
+  const minimumSpan = type === "carbon" ? 8 : 0.25;
+  const nextSpan = Math.min(full.max - full.min, Math.max(minimumSpan, span * factor));
+  const center = centerPpm ?? (current.min + current.max) / 2;
+  let min = center - nextSpan / 2;
+  let max = center + nextSpan / 2;
+  if (min < full.min) {
+    max += full.min - min;
+    min = full.min;
+  }
+  if (max > full.max) {
+    min -= max - full.max;
+    max = full.max;
+  }
+  state.viewDomains[type] = {
+    min: Math.max(full.min, min),
+    max: Math.min(full.max, max)
+  };
+  renderActiveSpectrum();
+}
+
+function resetSpectrumZoom(type = state.activeSpectrum) {
+  state.viewDomains[type] = { ...state.defaultDomains[type] };
+  renderActiveSpectrum();
+}
+
+function ppmFromPointer(event) {
+  const rect = NMRP.spectrum.getBoundingClientRect();
+  const fraction = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+  const domain = state.viewDomains[state.activeSpectrum];
+  return domain.max - fraction * (domain.max - domain.min);
 }
 
 function renderAssignments() {
@@ -493,6 +546,10 @@ function predictNmr() {
     const predictions = predictEnvironments(graph);
     state.graph = graph;
     state.predictions = predictions;
+    state.viewDomains = {
+      proton: { ...state.defaultDomains.proton },
+      carbon: { ...state.defaultDomains.carbon }
+    };
     NMRP.protonSummary.textContent = String(predictions.proton.length);
     NMRP.carbonSummary.textContent = String(predictions.carbon.length);
     tryRenderRdkit(smiles);
@@ -526,6 +583,7 @@ function initialiseJsme(attempt = 0) {
     document.getElementById("jsme-container").innerHTML = '<div class="plot-empty">JSME did not load. Use the SMILES box directly.</div>';
     return;
   }
+  document.getElementById("jsme-container").innerHTML = "";
   state.jsme = new window.JSApplet.JSME("jsme-container", "100%", "360px", {
     options: "oldlook,star"
   });
@@ -570,6 +628,14 @@ NMRP.carbonTab.addEventListener("click", () => {
   state.activeSpectrum = "carbon";
   renderActiveSpectrum();
 });
+NMRP.zoomIn.addEventListener("click", () => zoomSpectrum(0.5));
+NMRP.zoomOut.addEventListener("click", () => zoomSpectrum(2));
+NMRP.resetZoom.addEventListener("click", () => resetSpectrumZoom());
+NMRP.spectrum.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  zoomSpectrum(event.deltaY > 0 ? 1.25 : 0.8, ppmFromPointer(event));
+}, { passive: false });
+NMRP.spectrum.addEventListener("dblclick", () => resetSpectrumZoom());
 document.querySelectorAll(".nmr-example").forEach((button) => {
   button.addEventListener("click", () => {
     NMRP.smiles.value = button.dataset.smiles;

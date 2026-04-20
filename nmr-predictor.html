@@ -7,10 +7,10 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260420c">
+  <link rel="stylesheet" href="styles.css?v=20260420d">
   <script src="https://unpkg.com/@rdkit/rdkit/dist/RDKit_minimal.js"></script>
   <script src="https://jsme-editor.github.io/dist/jsme/jsme.nocache.js"></script>
-  <script src="nmr-predictor.js?v=20260420a" defer></script>
+  <script src="nmr-predictor.js?v=20260420b" defer></script>
 </head>
 <body>
   <div class="page-shell">
@@ -93,6 +93,9 @@
         <div class="plot-toolbar">
           <button id="nmrp-proton-tab" class="chip nav-link-active" type="button">1H NMR</button>
           <button id="nmrp-carbon-tab" class="chip" type="button">13C NMR</button>
+          <button id="nmrp-zoom-in" class="chip" type="button">Zoom In</button>
+          <button id="nmrp-zoom-out" class="chip" type="button">Zoom Out</button>
+          <button id="nmrp-reset-zoom" class="chip" type="button">Reset Zoom</button>
         </div>
 
         <div id="nmrp-structure" class="nmrp-structure"></div>
