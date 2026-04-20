@@ -660,8 +660,8 @@ function renderSpectrum(environments, type) {
   const domain = state.viewDomains[type] || fullDomain;
   const color = type === "carbon" ? DISPLAY_COLORS.carbon : DISPLAY_COLORS.proton;
   const peaks = expandPeaks(environments, type);
-  const fwhm = type === "carbon" ? 0.55 : 0.035;
-  const sampleCount = 900;
+  const fwhm = type === "carbon" ? 0.55 : 0.0045;
+  const sampleCount = type === "carbon" ? 900 : 2400;
   const xValues = [];
   const yValues = [];
   Array.from({ length: sampleCount }, (_, index) => {
@@ -706,7 +706,7 @@ function renderSpectrum(environments, type) {
     y: type === "proton" ? environments.map((env) => {
       const envPeaks = visiblePeaks.filter((peak) => peak.env.signalId === env.signalId);
       const top = envPeaks.reduce((max, peak) => Math.max(max, (peak.intensity / maxPeak) * 100), 0);
-      return Math.min(106, top + 7);
+      return Math.min(99, top + 5);
     }) : [],
     type: "scatter",
     mode: "text",
@@ -773,7 +773,7 @@ function renderSpectrum(environments, type) {
     },
     yaxis: {
       title: "Relative intensity",
-      range: [0, 108],
+      range: [0, 105],
       gridcolor: "rgba(24,36,45,0.08)",
       zeroline: false,
       fixedrange: true

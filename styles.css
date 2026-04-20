@@ -586,7 +586,7 @@ output {
 }
 
 .nmrp-structure {
-  min-height: 220px;
+  min-height: 120px;
   margin-bottom: 14px;
   display: grid;
   place-items: center;
@@ -597,9 +597,9 @@ output {
 }
 
 .nmrp-structure svg {
-  width: min(100%, 460px);
+  width: min(50%, 230px);
   height: auto;
-  max-height: 260px;
+  max-height: 130px;
 }
 
 .nmrp-spectrum-area {
