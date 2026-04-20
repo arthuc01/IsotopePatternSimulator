@@ -266,6 +266,9 @@ function adjacentHydrogenEnvironments(graph, atom) {
   if (atom.element !== "C") {
     return [];
   }
+  if (atom.aromatic) {
+    return aromaticHydrogenEnvironments(graph, atom);
+  }
   const groups = new Map();
   neighbors(graph, atom)
     .filter(({ atom: n, bond }) => n.element === "C" && bond.order === 1 && n.hydrogens > 0)
@@ -278,6 +281,36 @@ function adjacentHydrogenEnvironments(graph, atom) {
     });
   return Array.from(groups.values())
     .sort((a, b) => b.count - a.count || a.atomIds[0] - b.atomIds[0])
+    .slice(0, 3);
+}
+
+function aromaticHydrogenEnvironments(graph, atom) {
+  // Teaching approximation for aromatic splitting: use topological ring distance
+  // as ortho/meta/para coupling classes. This is not a full spin-system model.
+  const distances = shortestPathDistances(graph, atom.id);
+  const couplingByDistance = new Map([
+    [1, { label: "ortho", jHz: 7.8 }],
+    [2, { label: "meta", jHz: 2.0 }],
+    [3, { label: "para", jHz: 0.6 }]
+  ]);
+  const groups = new Map();
+  graph.atoms
+    .filter((candidate) => candidate.id !== atom.id && candidate.element === "C" && candidate.aromatic && candidate.hydrogens > 0)
+    .forEach((candidate) => {
+      const distance = distances[candidate.id];
+      const coupling = couplingByDistance.get(distance);
+      if (!coupling) {
+        return;
+      }
+      const key = `aromatic-${coupling.label}`;
+      const current = groups.get(key) || { count: 0, atomIds: [], jHz: coupling.jHz, label: coupling.label };
+      current.count += candidate.hydrogens;
+      current.atomIds.push(candidate.id + 1);
+      groups.set(key, current);
+    });
+  const order = { ortho: 0, meta: 1, para: 2 };
+  return Array.from(groups.values())
+    .sort((a, b) => order[a.label] - order[b.label])
     .slice(0, 3);
 }
 
@@ -387,10 +420,6 @@ function stableHash(text) {
 }
 
 function atomFeatureKey(graph, atom) {
-  const neighbourBits = neighbors(graph, atom)
-    .map(({ atom: n, bond }) => `${n.element}${n.aromatic ? "ar" : ""}:${bond.order}:${n.hydrogens}`)
-    .sort()
-    .join(",");
   return [
     atom.element,
     atom.aromatic ? "aromatic" : "aliphatic",
@@ -400,8 +429,24 @@ function atomFeatureKey(graph, atom) {
     isCarbonylCarbon(graph, atom) ? "carbonyl" : "",
     isAlkeneCarbon(graph, atom) ? "alkene" : "",
     isAlkyneCarbon(graph, atom) ? "alkyne" : "",
-    neighbourBits
   ].join("|");
+}
+
+function radiusEnvironmentKey(graph, atom, radius = 3) {
+  // Morgan-like teaching signature: repeatedly fold sorted neighbour signatures
+  // into each atom key. This separates ortho/meta/para-type environments before
+  // any ppm calculation, instead of relying on shift similarity.
+  let signatures = graph.atoms.map((entry) => atomFeatureKey(graph, entry));
+  for (let level = 1; level <= radius; level += 1) {
+    signatures = graph.atoms.map((entry) => {
+      const neighbourSignatures = neighbors(graph, entry)
+        .map(({ atom: n, bond }) => `${bond.order}:${signatures[n.id]}`)
+        .sort()
+        .join(",");
+      return `r${level}(${signatures[entry.id]}->[${neighbourSignatures}])`;
+    });
+  }
+  return signatures[atom.id];
 }
 
 function baseProtonShift(graph, atom) {
@@ -505,8 +550,28 @@ function mergeEnvironmentKeys(items) {
   const grouped = Array.from(map.values()).map((item) => ({
     ...item,
     ppm: item.sourcePpm.reduce((sum, value) => sum + value, 0) / item.sourcePpm.length
-  }));
+  })).map(normalizeSignalSplitting);
   return applyTieBreaking(grouped).sort((a, b) => b.ppm - a.ppm);
+}
+
+function normalizeSignalSplitting(signal) {
+  if (signal.nucleus !== "1H" || signal.broad || !signal.splitEnvironments?.length) {
+    return signal;
+  }
+  const memberAtoms = new Set(signal.atomIds);
+  const splitEnvironments = signal.splitEnvironments
+    .map((environment) => {
+      const atomIds = environment.atomIds.filter((atomId) => !memberAtoms.has(atomId));
+      const count = environment.label ? atomIds.length : environment.count;
+      return { ...environment, atomIds, count };
+    })
+    .filter((environment) => environment.count > 0);
+  return {
+    ...signal,
+    splitEnvironments,
+    neighborH: splitEnvironments.reduce((sum, environment) => sum + environment.count, 0),
+    multiplicity: multiplicityFromEnvironments(splitEnvironments)
+  };
 }
 
 function applyTieBreaking(signals) {
@@ -545,8 +610,8 @@ function predictEnvironments(graph) {
         const correction = correctionForAtom(graph, atom, "1H", context);
         const splitEnvironments = base.broad ? [] : adjacentHydrogenEnvironments(graph, atom);
         const n = splitEnvironments.reduce((sum, environment) => sum + environment.count, 0);
-        const splitKey = splitEnvironments.map((environment) => `${environment.count}:${environment.atomIds.join(".")}:${environment.jHz.toFixed(1)}`).join("/");
-        const environmentKey = `1H|${atomFeatureKey(graph, atom)}|split:${splitKey}|${base.broad ? "broad" : "sharp"}`;
+        const splitKey = splitEnvironments.map((environment) => `${environment.label || "adj"}:${environment.count}:${environment.jHz.toFixed(1)}`).join("/");
+        const environmentKey = `1H|${radiusEnvironmentKey(graph, atom, 3)}|split:${splitKey}|${base.broad ? "broad" : "sharp"}`;
         protonItems.push({
           nucleus: "1H",
           atomIds: [atom.id + 1],
@@ -565,7 +630,7 @@ function predictEnvironments(graph) {
     if (atom.element === "C") {
       const base = baseCarbonShift(graph, atom);
       const correction = correctionForAtom(graph, atom, "13C", context);
-      const environmentKey = `13C|${atomFeatureKey(graph, atom)}`;
+      const environmentKey = `13C|${radiusEnvironmentKey(graph, atom, 3)}`;
       carbonItems.push({
         nucleus: "13C",
         atomIds: [atom.id + 1],
@@ -818,7 +883,10 @@ function multipletDetail(signal) {
   if (!environments.length) {
     return "singlet: no adjacent carbon-bound H";
   }
-  return environments.map((environment, index) => `J${index + 1} ${environment.jHz.toFixed(1)} Hz to ${environment.count}H on atom(s) ${environment.atomIds.join(",")}`).join("; ");
+  return environments.map((environment, index) => {
+    const label = environment.label ? `${environment.label} ` : "";
+    return `J${index + 1} ${environment.jHz.toFixed(1)} Hz ${label}to ${environment.count}H on atom(s) ${environment.atomIds.join(",")}`;
+  }).join("; ");
 }
 
 function zoomSpectrum(factor, centerPpm = null) {
