@@ -285,33 +285,21 @@ function adjacentHydrogenEnvironments(graph, atom) {
 }
 
 function aromaticHydrogenEnvironments(graph, atom) {
-  // Teaching approximation for aromatic splitting: use topological ring distance
-  // as ortho/meta/para coupling classes. This is not a full spin-system model.
+  // Teaching approximation for aromatic splitting: keep only ortho coupling.
+  // Meta/para couplings are real but omitted here to keep spectra readable.
   const distances = shortestPathDistances(graph, atom.id);
-  const couplingByDistance = new Map([
-    [1, { label: "ortho", jHz: 7.8 }],
-    [2, { label: "meta", jHz: 2.0 }],
-    [3, { label: "para", jHz: 0.6 }]
-  ]);
-  const groups = new Map();
-  graph.atoms
+  const orthoAtoms = graph.atoms
     .filter((candidate) => candidate.id !== atom.id && candidate.element === "C" && candidate.aromatic && candidate.hydrogens > 0)
-    .forEach((candidate) => {
-      const distance = distances[candidate.id];
-      const coupling = couplingByDistance.get(distance);
-      if (!coupling) {
-        return;
-      }
-      const key = `aromatic-${coupling.label}`;
-      const current = groups.get(key) || { count: 0, atomIds: [], jHz: coupling.jHz, label: coupling.label };
-      current.count += candidate.hydrogens;
-      current.atomIds.push(candidate.id + 1);
-      groups.set(key, current);
-    });
-  const order = { ortho: 0, meta: 1, para: 2 };
-  return Array.from(groups.values())
-    .sort((a, b) => order[a.label] - order[b.label])
-    .slice(0, 3);
+    .filter((candidate) => distances[candidate.id] === 1);
+  if (!orthoAtoms.length) {
+    return [];
+  }
+  return [{
+    count: 1,
+    atomIds: orthoAtoms.map((candidate) => candidate.id + 1),
+    jHz: 8.0,
+    label: "ortho"
+  }];
 }
 
 function estimateJHz(graph, atom, neighbour, bond) {
@@ -562,7 +550,7 @@ function normalizeSignalSplitting(signal) {
   const splitEnvironments = signal.splitEnvironments
     .map((environment) => {
       const atomIds = environment.atomIds.filter((atomId) => !memberAtoms.has(atomId));
-      const count = environment.label ? atomIds.length : environment.count;
+      const count = environment.label === "ortho" ? 1 : environment.label ? atomIds.length : environment.count;
       return { ...environment, atomIds, count };
     })
     .filter((environment) => environment.count > 0);
@@ -667,10 +655,10 @@ function expandPeaks(environments, type) {
   const peaks = [];
   environments.forEach((env) => {
     if (type === "carbon") {
-      peaks.push({ ppm: env.ppm, intensity: 1, env });
+      peaks.push({ ppm: env.ppm, intensity: 1, env, fwhm: 0.55 });
       return;
     }
-    let components = [{ offsetHz: 0, intensity: env.integration }];
+    let components = [{ offsetHz: 0, intensity: 1 }];
     const splitEnvironments = env.broad ? [] : (env.splitEnvironments || []).slice(0, 3);
     splitEnvironments.forEach((splitEnvironment) => {
       const weights = binomialWeights(Math.max(0, Math.min(splitEnvironment.count, 6)));
@@ -687,7 +675,7 @@ function expandPeaks(environments, type) {
       components = next;
     });
     if (!components.length) {
-      components = [{ offsetHz: 0, intensity: env.integration }];
+      components = [{ offsetHz: 0, intensity: 1 }];
     }
     const merged = new Map();
     components.forEach((component) => {
@@ -695,8 +683,10 @@ function expandPeaks(environments, type) {
       const key = ppm.toFixed(5);
       merged.set(key, (merged.get(key) || 0) + component.intensity);
     });
+    const totalIntensity = Array.from(merged.values()).reduce((sum, intensity) => sum + intensity, 0) || 1;
     Array.from(merged.entries()).forEach(([ppm, intensity]) => {
-      peaks.push({ ppm: Number(ppm), intensity, env });
+      const scaledIntensity = (intensity / totalIntensity) * env.integration;
+      peaks.push({ ppm: Number(ppm), intensity: scaledIntensity, env, fwhm: env.broad ? 0.22 : 0.0045 });
     });
   });
   return peaks;
@@ -731,7 +721,7 @@ function renderSpectrum(environments, type) {
   const yValues = [];
   Array.from({ length: sampleCount }, (_, index) => {
     const ppm = domain.min + ((domain.max - domain.min) * index) / (sampleCount - 1);
-    const y = peaks.reduce((sum, peak) => sum + peak.intensity * gaussian(ppm, peak.ppm, fwhm), 0);
+    const y = peaks.reduce((sum, peak) => sum + peak.intensity * gaussian(ppm, peak.ppm, peak.fwhm || fwhm), 0);
     xValues.push(ppm);
     yValues.push(y);
   });
@@ -739,7 +729,7 @@ function renderSpectrum(environments, type) {
   const maxPeak = Math.max(...peaks.map((peak) => peak.intensity), 1);
   const visiblePeaks = peaks.filter((peak) => peak.ppm >= domain.min && peak.ppm <= domain.max);
   const profileHeightAt = (ppm) => {
-    const y = peaks.reduce((sum, peak) => sum + peak.intensity * gaussian(ppm, peak.ppm, fwhm), 0);
+    const y = peaks.reduce((sum, peak) => sum + peak.intensity * gaussian(ppm, peak.ppm, peak.fwhm || fwhm), 0);
     return (y / maxY) * 100;
   };
   const showTms = domain.min <= 0 && domain.max >= 0;
@@ -966,15 +956,17 @@ function tryRenderRdkit(smiles) {
       throw new Error("RDKit could not parse SMILES.");
     }
     const selected = getSelectedSignal();
+    let svg = "";
     if (selected && mol.get_svg_with_highlights) {
       const details = JSON.stringify({
         atoms: selected.atomIds.map((id) => id - 1),
         highlightColour: [0.85, 0.12, 0.22]
       });
-      NMRP.structure.innerHTML = mol.get_svg_with_highlights(details);
+      svg = mol.get_svg_with_highlights(details);
     } else {
-      NMRP.structure.innerHTML = mol.get_svg();
+      svg = mol.get_svg();
     }
+    NMRP.structure.innerHTML = addAtomNumbersToSvg(svg, state.graph);
     if (selected) {
       NMRP.structure.insertAdjacentHTML("beforeend", `<div class="nmrp-highlight-note">Selected atoms: ${selected.atomIds.join(", ")}</div>`);
     }
@@ -985,6 +977,53 @@ function tryRenderRdkit(smiles) {
       mol.delete();
     }
   }
+}
+
+function addAtomNumbersToSvg(svg, graph) {
+  if (!graph?.atoms?.length || !svg.includes("</svg>")) {
+    return svg;
+  }
+  const positions = inferSvgAtomPositions(svg, graph);
+  if (!positions.length) {
+    return svg;
+  }
+  const labels = positions.map((point, index) => `<g class="atom-number-label"><circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="7.2" fill="rgba(255,255,255,0.92)" stroke="#0d6c74" stroke-width="1"></circle><text x="${point.x.toFixed(1)}" y="${(point.y + 3.5).toFixed(1)}" text-anchor="middle" font-size="9" fill="#0a4c57" font-family="Arial">${index + 1}</text></g>`).join("");
+  return svg.replace("</svg>", `${labels}</svg>`);
+}
+
+function inferSvgAtomPositions(svg, graph) {
+  const explicit = Array.from(svg.matchAll(/class=['"]atom-\d+['"][^>]*?(?:cx=['"]([\d.-]+)['"][^>]*?cy=['"]([\d.-]+)['"]|x=['"]([\d.-]+)['"][^>]*?y=['"]([\d.-]+)['"])/g))
+    .map((match) => ({ x: Number(match[1] || match[3]), y: Number(match[2] || match[4]) }))
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+  if (explicit.length >= graph.atoms.length) {
+    return explicit.slice(0, graph.atoms.length);
+  }
+
+  const bondCoordinates = Array.from(svg.matchAll(/x1=['"]([\d.-]+)['"][^>]*y1=['"]([\d.-]+)['"][^>]*x2=['"]([\d.-]+)['"][^>]*y2=['"]([\d.-]+)['"]/g))
+    .map((match) => [Number(match[1]), Number(match[2]), Number(match[3]), Number(match[4])])
+    .filter((coords) => coords.every(Number.isFinite));
+  if (!bondCoordinates.length) {
+    return [];
+  }
+
+  const points = [];
+  const addPoint = (x, y) => {
+    const current = points.find((point) => Math.hypot(point.x - x, point.y - y) < 3);
+    if (current) {
+      current.x = (current.x * current.count + x) / (current.count + 1);
+      current.y = (current.y * current.count + y) / (current.count + 1);
+      current.count += 1;
+    } else {
+      points.push({ x, y, count: 1 });
+    }
+  };
+  bondCoordinates.forEach(([x1, y1, x2, y2]) => {
+    addPoint(x1, y1);
+    addPoint(x2, y2);
+  });
+  return points
+    .sort((a, b) => b.count - a.count)
+    .slice(0, graph.atoms.length);
 }
 
 function getSelectedSignal() {
