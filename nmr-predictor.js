@@ -21,6 +21,7 @@ const NMRP = {
   caption: document.getElementById("nmrp-spectrum-caption"),
   fullscreen: document.getElementById("nmrp-fullscreen"),
   downloadCsv: document.getElementById("nmrp-download-csv"),
+  downloadNef: document.getElementById("nmrp-download-nef"),
   zoomIn: document.getElementById("nmrp-zoom-in"),
   zoomOut: document.getElementById("nmrp-zoom-out"),
   resetZoom: document.getElementById("nmrp-reset-zoom")
@@ -82,6 +83,15 @@ function sanitizeFilename(value) {
 
 function downloadTextCsv(rows, filename) {
   const blob = new Blob([rows], { type: "text/csv;charset=utf-8" });
+  downloadBlob(blob, filename);
+}
+
+function downloadTextFile(text, filename, mimeType = "text/plain;charset=utf-8") {
+  const blob = new Blob([text], { type: mimeType });
+  downloadBlob(blob, filename);
+}
+
+function downloadBlob(blob, filename) {
   const link = document.createElement("a");
   const objectUrl = URL.createObjectURL(blob);
   link.href = objectUrl;
@@ -3091,6 +3101,298 @@ function export2DCsv(type, peaks) {
   setPredictorStatus(`Downloaded ${peaks.length} ${type.toUpperCase()} peaks to ${filename}.`);
 }
 
+function nefQuote(value) {
+  if (value === null || value === undefined || value === "") return ".";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : ".";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  const text = String(value);
+  if (/^[A-Za-z0-9_@%+.\-]+$/.test(text)) return text;
+  return `'${text.replace(/'/g, "''")}'`;
+}
+
+function nefLine(values) {
+  return values.map(nefQuote).join("  ");
+}
+
+function nefAtomName(signal, element, atomId = null) {
+  const ids = dedupeSortedNumeric(atomId ? [atomId] : (signal.atomIds || signal.carrierAtomIds || signal.sourceAtomIds || []));
+  const firstId = ids[0] || 1;
+  if (element === "H") {
+    const needsWildcard = ids.length > 1 || Number(signal.integration || 1) > 1;
+    return `H${firstId}${needsWildcard ? "%" : ""}`;
+  }
+  return `${element}${firstId}`;
+}
+
+function nefChemicalShiftRows() {
+  const rows = [];
+  const addRows = (signals, element, isotope) => {
+    signals.forEach((signal) => {
+      const atomIds = dedupeSortedNumeric(signal.sourceAtomIds || signal.carrierAtomIds || signal.atomIds || []);
+      atomIds.forEach((atomId) => {
+        rows.push([
+          "A",
+          1,
+          "MOL",
+          nefAtomName(signal, element, atomId),
+          Number(signal.ppm).toFixed(element === "H" ? 4 : 3),
+          0,
+          element,
+          isotope,
+          1,
+          `${signal.signalId}; atoms ${atomIds.join(",")}; ${signal.multiplicity || "s"}; ${signal.label || ""}`
+        ]);
+      });
+    });
+  };
+  addRows(state.predictions.proton || [], "H", 1);
+  addRows(state.predictions.carbon || [], "C", 13);
+  return rows;
+}
+
+function nefSpectrumDimensionRows(type) {
+  if (type === "proton") {
+    return [[1, "ppm", "1H", 400.0, 12, 12, "circular", true, true]];
+  }
+  if (type === "carbon") {
+    return [[1, "ppm", "13C", 100.0, 220, 220, "circular", true, true]];
+  }
+  if (type === "hsqc") {
+    return [
+      [1, "ppm", "1H", 400.0, 12, 12, "circular", true, true],
+      [2, "ppm", "13C", 100.0, 220, 220, "circular", true, false]
+    ];
+  }
+  return [
+    [1, "ppm", "1H", 400.0, 12, 12, "circular", true, true],
+    [2, "ppm", "1H", 400.0, 12, 12, "circular", true, false]
+  ];
+}
+
+function appendNefSpectrumDimensions(lines, type) {
+  lines.push("   loop_");
+  [
+    "_nef_spectrum_dimension.dimension_id",
+    "_nef_spectrum_dimension.axis_unit",
+    "_nef_spectrum_dimension.axis_code",
+    "_nef_spectrum_dimension.spectrometer_frequency",
+    "_nef_spectrum_dimension.spectral_width",
+    "_nef_spectrum_dimension.value_first_point",
+    "_nef_spectrum_dimension.folding",
+    "_nef_spectrum_dimension.absolute_peak_positions",
+    "_nef_spectrum_dimension.is_acquisition"
+  ].forEach((tag) => lines.push(`      ${tag}`));
+  nefSpectrumDimensionRows(type).forEach((row) => lines.push(`      ${nefLine(row)}`));
+  lines.push("   stop_");
+}
+
+function appendNefTransfer(lines, type) {
+  if (type === "proton" || type === "carbon") return;
+  const transferType = type === "hsqc" ? "onebond" : type === "cosy" ? "Jcoupling" : "through-space";
+  lines.push("   loop_");
+  [
+    "_nef_spectrum_dimension_transfer.dimension_1",
+    "_nef_spectrum_dimension_transfer.dimension_2",
+    "_nef_spectrum_dimension_transfer.transfer_type",
+    "_nef_spectrum_dimension_transfer.is_indirect"
+  ].forEach((tag) => lines.push(`      ${tag}`));
+  lines.push(`      ${nefLine([1, 2, transferType, false])}`);
+  lines.push("   stop_");
+}
+
+function appendNefPeakLoop1D(lines, type, signals) {
+  const peaks = expandPeaks(signals, type).sort((a, b) => b.ppm - a.ppm);
+  lines.push("   loop_");
+  [
+    "_nef_peak.index",
+    "_nef_peak.peak_id",
+    "_nef_peak.volume",
+    "_nef_peak.volume_uncertainty",
+    "_nef_peak.height",
+    "_nef_peak.height_uncertainty",
+    "_nef_peak.position_1",
+    "_nef_peak.position_uncertainty_1",
+    "_nef_peak.chain_code_1",
+    "_nef_peak.sequence_code_1",
+    "_nef_peak.residue_name_1",
+    "_nef_peak.atom_name_1",
+    "_nef_peak.ccpn_comment"
+  ].forEach((tag) => lines.push(`      ${tag}`));
+  peaks.forEach((peak, index) => {
+    const element = type === "carbon" ? "C" : "H";
+    const env = peak.env;
+    lines.push(`      ${nefLine([
+      index + 1,
+      peak.peakId || `${env.signalId}-${index + 1}`,
+      Number(peak.intensity || 1).toFixed(6),
+      0,
+      Number(peak.intensity || 1).toFixed(6),
+      0,
+      Number(peak.ppm).toFixed(element === "H" ? 5 : 4),
+      0,
+      "A",
+      1,
+      "MOL",
+      nefAtomName(env, element),
+      `${env.nucleus} ${env.multiplicity || "s"} atoms ${env.atomIds.join(",")}; ${env.label || ""}`
+    ])}`);
+  });
+  lines.push("   stop_");
+}
+
+function appendNefPeakLoop2D(lines, type, peaks) {
+  lines.push("   loop_");
+  [
+    "_nef_peak.index",
+    "_nef_peak.peak_id",
+    "_nef_peak.volume",
+    "_nef_peak.volume_uncertainty",
+    "_nef_peak.height",
+    "_nef_peak.height_uncertainty",
+    "_nef_peak.position_1",
+    "_nef_peak.position_uncertainty_1",
+    "_nef_peak.position_2",
+    "_nef_peak.position_uncertainty_2",
+    "_nef_peak.chain_code_1",
+    "_nef_peak.sequence_code_1",
+    "_nef_peak.residue_name_1",
+    "_nef_peak.atom_name_1",
+    "_nef_peak.chain_code_2",
+    "_nef_peak.sequence_code_2",
+    "_nef_peak.residue_name_2",
+    "_nef_peak.atom_name_2",
+    "_nef_peak.ccpn_comment"
+  ].forEach((tag) => lines.push(`      ${tag}`));
+  peaks.forEach((peak, index) => {
+    const volume = type === "noesy" ? Number(peak.volume || 0) : (peak.diagonal ? 0.35 : 1);
+    const atomName1 = type === "hsqc"
+      ? nefAtomName({ atomIds: peak.protonAtomIds, integration: peak.protonAtomIds?.length || 1 }, "H")
+      : nefAtomName({ atomIds: peak.atomIdsA }, "H");
+    const atomName2 = type === "hsqc"
+      ? nefAtomName({ atomIds: peak.carbonAtomIds }, "C")
+      : nefAtomName({ atomIds: peak.atomIdsB }, "H");
+    lines.push(`      ${nefLine([
+      index + 1,
+      peak.peakId,
+      volume.toFixed(6),
+      0,
+      volume.toFixed(6),
+      0,
+      Number(peak.x).toFixed(5),
+      0,
+      Number(peak.y).toFixed(5),
+      0,
+      "A",
+      1,
+      "MOL",
+      atomName1,
+      "A",
+      1,
+      "MOL",
+      atomName2,
+      `${type.toUpperCase()} ${peak.diagonal ? "diagonal" : "cross peak"}; ${peak.label || ""}`
+    ])}`);
+  });
+  lines.push("   stop_");
+}
+
+function appendNefSpectrumSaveframe(lines, type, signalsOrPeaks) {
+  const experiment = type === "proton" ? "1H" : type === "carbon" ? "13C" : type.toUpperCase();
+  const framecode = `nef_nmr_spectrum_${type}_predicted`;
+  lines.push("");
+  lines.push(`save_${framecode}`);
+  lines.push(`   _nef_nmr_spectrum.sf_category           ${nefQuote("nef_nmr_spectrum")}`);
+  lines.push(`   _nef_nmr_spectrum.sf_framecode          ${nefQuote(framecode)}`);
+  lines.push(`   _nef_nmr_spectrum.num_dimensions        ${type === "proton" || type === "carbon" ? 1 : 2}`);
+  lines.push(`   _nef_nmr_spectrum.chemical_shift_list   ${nefQuote("nef_chemical_shift_list_predicted")}`);
+  lines.push(`   _nef_nmr_spectrum.experiment_type       ${nefQuote(experiment)}`);
+  lines.push(`   _nef_nmr_spectrum.ccpn_spectrum_comment ${nefQuote("Teaching prediction from browser heuristics; not an analytical assignment.")}`);
+  appendNefSpectrumDimensions(lines, type);
+  appendNefTransfer(lines, type);
+  if (type === "proton" || type === "carbon") {
+    appendNefPeakLoop1D(lines, type, signalsOrPeaks);
+  } else {
+    appendNefPeakLoop2D(lines, type, signalsOrPeaks);
+  }
+  lines.push("save_");
+}
+
+function buildAllSpectraNef() {
+  const smiles = NMRP.smiles.value.trim() || "molecule";
+  const safeDataName = sanitizeFilename(smiles).replace(/-/g, "_");
+  const lines = [
+    `data_${safeDataName || "nmr_predictor"}`,
+    "",
+    "save_nef_nmr_meta_data",
+    "   _nef_nmr_meta_data.sf_category      nef_nmr_meta_data",
+    "   _nef_nmr_meta_data.sf_framecode     nef_nmr_meta_data",
+    "   _nef_nmr_meta_data.format_name      nmr_exchange_format",
+    "   _nef_nmr_meta_data.format_version   1.1",
+    "   _nef_nmr_meta_data.program_name     IsotopePatternSimulator_NMR_Predictor",
+    "   _nef_nmr_meta_data.program_version  browser_teaching_model",
+    `   _nef_nmr_meta_data.creation_date    ${nefQuote(new Date().toISOString())}`,
+    "save_",
+    "",
+    "save_nef_molecular_system",
+    "   _nef_molecular_system.sf_category   nef_molecular_system",
+    "   _nef_molecular_system.sf_framecode  nef_molecular_system",
+    "   loop_",
+    "      _nef_sequence.index",
+    "      _nef_sequence.chain_code",
+    "      _nef_sequence.sequence_code",
+    "      _nef_sequence.residue_name",
+    "      _nef_sequence.linking",
+    "      _nef_sequence.residue_variant",
+    "      _nef_sequence.ccpn_comment",
+    `      ${nefLine([1, "A", 1, "MOL", "single", ".", `SMILES ${smiles}`])}`,
+    "   stop_",
+    "save_",
+    "",
+    "save_nef_chemical_shift_list_predicted",
+    "   _nef_chemical_shift_list.sf_category   nef_chemical_shift_list",
+    "   _nef_chemical_shift_list.sf_framecode  nef_chemical_shift_list_predicted",
+    "   _nef_chemical_shift_list.ccpn_comment  'Predicted teaching shifts; values are heuristic.'",
+    "   loop_",
+    "      _nef_chemical_shift.chain_code",
+    "      _nef_chemical_shift.sequence_code",
+    "      _nef_chemical_shift.residue_name",
+    "      _nef_chemical_shift.atom_name",
+    "      _nef_chemical_shift.value",
+    "      _nef_chemical_shift.value_uncertainty",
+    "      _nef_chemical_shift.element",
+    "      _nef_chemical_shift.isotope_number",
+    "      _nef_chemical_shift.ccpn_figure_of_merit",
+    "      _nef_chemical_shift.ccpn_comment"
+  ];
+  nefChemicalShiftRows().forEach((row) => lines.push(`      ${nefLine(row)}`));
+  lines.push("   stop_");
+  lines.push("save_");
+
+  appendNefSpectrumSaveframe(lines, "proton", state.predictions.proton || []);
+  appendNefSpectrumSaveframe(lines, "carbon", state.predictions.carbon || []);
+  appendNefSpectrumSaveframe(lines, "hsqc", state.predictions.hsqc || []);
+  appendNefSpectrumSaveframe(lines, "cosy", state.predictions.cosy || []);
+  appendNefSpectrumSaveframe(lines, "noesy", state.predictions.noesy || []);
+  lines.push("");
+  return `${lines.join("\n")}\n`;
+}
+
+function exportAllSpectraNef() {
+  const totalSignals = (state.predictions.proton?.length || 0)
+    + (state.predictions.carbon?.length || 0)
+    + (state.predictions.hsqc?.length || 0)
+    + (state.predictions.cosy?.length || 0)
+    + (state.predictions.noesy?.length || 0);
+  if (!totalSignals) {
+    setPredictorStatus("No predicted spectra available to export yet.", true);
+    return;
+  }
+  const smilesTag = sanitizeFilename(NMRP.smiles.value.trim() || "molecule");
+  const filename = `${smilesTag}-all-spectra.nef`;
+  downloadTextFile(buildAllSpectraNef(), filename, "chemical/x-nef;charset=utf-8");
+  setPredictorStatus(`Downloaded NEF file with 1H, 13C, HSQC, COSY and NOESY peak lists to ${filename}.`);
+}
+
 function renderActiveSpectrum() {
   const type = state.activeSpectrum;
   NMRP.protonTab.classList.toggle("nav-link-active", type === "proton");
@@ -3403,6 +3705,7 @@ NMRP.noesyTab?.addEventListener("click", () => {
   renderActiveSpectrum();
 });
 NMRP.downloadCsv.addEventListener("click", exportActiveSpectrumCsv);
+NMRP.downloadNef?.addEventListener("click", exportAllSpectraNef);
 NMRP.zoomIn.addEventListener("click", () => zoomSpectrum(0.5));
 NMRP.zoomOut.addEventListener("click", () => zoomSpectrum(2));
 NMRP.resetZoom.addEventListener("click", () => resetSpectrumZoom());
