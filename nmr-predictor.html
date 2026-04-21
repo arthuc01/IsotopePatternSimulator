@@ -31,7 +31,10 @@
         <p class="hero-copy">
           Enter a SMILES string or draw a small molecule. 
           The page then applies simple teaching 
-          heuristics for proton and carbon environments to generate NMR spectra. 
+          heuristics for proton and carbon environments to generate NMR spectra.
+          
+          It is for teaching trends and splitting logic, not database-grade spectral assignment.
+
           <a href="nmr-predictor-readme.html">Read the heuristic model notes.</a>
         </p>
       </div>
@@ -52,7 +55,8 @@
       <section class="panel controls-panel">
         <div class="panel-heading">
           <h2>Structure Input</h2>
-          <p>This is intentionally approximate. It is for teaching trends and splitting logic, not database-grade assignment.</p>
+          <p>Molecules may be drawn below or entered as a 
+            <a href="https://en.wikipedia.org/wiki/Simplified_Molecular_Input_Line_Entry_System">SMILES string</a></p>
         </div>
 
         <label class="field">
@@ -106,7 +110,8 @@
       <section class="panel plot-panel">
         <div class="panel-heading">
           <h2>Predicted Spectra</h2>
-          <p>Switch between proton and carbon spectra. Proton splitting uses a simple n+1 rule from adjacent carbon-bound hydrogens and does not model geminal/long-range couplings.</p>
+          <p>Switch between proton and carbon spectra. Proton splitting uses a simple n+1 rule from adjacent 
+            carbon-bound hydrogens and does not model geminal/long-range couplings.</p>
         </div>
 
         <div class="plot-toolbar">

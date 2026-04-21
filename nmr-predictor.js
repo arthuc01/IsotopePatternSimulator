@@ -2578,7 +2578,7 @@ function renderSpectrum(environments, type) {
     },
     xaxis: {
       title: "Chemical shift (ppm)",
-      autorange: "reversed",
+      autorange: false,
       range: [domain.max, domain.min],
       gridcolor: "rgba(24,36,45,0.08)",
       zeroline: false
