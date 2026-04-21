@@ -97,6 +97,28 @@ function downloadTextCsv(rows, filename) {
   }
 }
 
+function autoDomainForSignals(signals, fallback) {
+  const ppmValues = (signals || [])
+    .map((signal) => Number(signal.ppm))
+    .filter(Number.isFinite);
+  if (!ppmValues.length) {
+    return { ...fallback };
+  }
+  const minPpm = Math.min(...ppmValues);
+  const maxPpm = Math.max(...ppmValues);
+  return {
+    min: minPpm < 0 ? Math.floor(minPpm) - 1 : 0,
+    max: Math.ceil(maxPpm) + 1
+  };
+}
+
+function autoDefaultDomains(predictions) {
+  return {
+    proton: autoDomainForSignals(predictions.proton, state.defaultDomains.proton),
+    carbon: autoDomainForSignals(predictions.carbon, state.defaultDomains.carbon)
+  };
+}
+
 function normalizeElement(token) {
   if (token.length === 1 && token === token.toLowerCase()) {
     return token.toUpperCase();
@@ -3163,6 +3185,7 @@ async function predictNmr() {
     state.predictions = predictions;
     state.selectedSignalId = null;
     state.selectedSignalIds = [];
+    state.defaultDomains = autoDefaultDomains(predictions);
     if (shouldResetView) {
       state.viewDomains = {
         proton: { ...state.defaultDomains.proton },
