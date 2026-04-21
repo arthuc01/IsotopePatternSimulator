@@ -1385,6 +1385,197 @@ function fallbackNoesyCoordinates(graph) {
   return coords;
 }
 
+function bondTargetLength(order) {
+  if (order >= 2.5) return 1.22;
+  if (order >= 1.75) return 1.34;
+  if (order >= 1.25) return 1.40;
+  return 1.52;
+}
+
+function minimizeDisplayCoordinates(graph, coordinates, options = {}) {
+  if (!graph?.atoms?.length || !Array.isArray(coordinates) || coordinates.length < graph.atoms.length) {
+    return coordinates;
+  }
+  const iterations = Number.isFinite(options.iterations) ? options.iterations : 22;
+  const stepSize = Number.isFinite(options.stepSize) ? options.stepSize : 0.14;
+  const maxStep = Number.isFinite(options.maxStep) ? options.maxStep : 0.085;
+  const springK = Number.isFinite(options.springK) ? options.springK : 0.48;
+  const repulsionK = Number.isFinite(options.repulsionK) ? options.repulsionK : 0.055;
+  const repulsionCutoff = Number.isFinite(options.repulsionCutoff) ? options.repulsionCutoff : 2.2;
+
+  const points = coordinates.slice(0, graph.atoms.length).map((point, index) => ({
+    x: Number.isFinite(point?.x) ? point.x : index * 0.3,
+    y: Number.isFinite(point?.y) ? point.y : 0,
+    z: Number.isFinite(point?.z) ? point.z : ((index % 3) - 1) * 0.25
+  }));
+
+  const bondedPairs = new Set();
+  graph.bonds.forEach((bond) => {
+    const a = Math.min(bond.from, bond.to);
+    const b = Math.max(bond.from, bond.to);
+    bondedPairs.add(`${a}|${b}`);
+  });
+
+  for (let iter = 0; iter < iterations; iter += 1) {
+    const forces = points.map(() => ({ x: 0, y: 0, z: 0 }));
+
+    graph.bonds.forEach((bond) => {
+      const a = bond.from;
+      const b = bond.to;
+      const dx = points[b].x - points[a].x;
+      const dy = points[b].y - points[a].y;
+      const dz = points[b].z - points[a].z;
+      const dist = Math.max(1e-4, Math.hypot(dx, dy, dz));
+      const target = bondTargetLength(bond.order);
+      const stretch = dist - target;
+      const magnitude = springK * stretch;
+      const ux = dx / dist;
+      const uy = dy / dist;
+      const uz = dz / dist;
+      forces[a].x += magnitude * ux;
+      forces[a].y += magnitude * uy;
+      forces[a].z += magnitude * uz;
+      forces[b].x -= magnitude * ux;
+      forces[b].y -= magnitude * uy;
+      forces[b].z -= magnitude * uz;
+    });
+
+    for (let i = 0; i < points.length; i += 1) {
+      for (let j = i + 1; j < points.length; j += 1) {
+        if (bondedPairs.has(`${i}|${j}`)) continue;
+        const dx = points[j].x - points[i].x;
+        const dy = points[j].y - points[i].y;
+        const dz = points[j].z - points[i].z;
+        const dist = Math.max(1e-4, Math.hypot(dx, dy, dz));
+        if (dist > repulsionCutoff) continue;
+        const magnitude = repulsionK / (dist * dist);
+        const ux = dx / dist;
+        const uy = dy / dist;
+        const uz = dz / dist;
+        forces[i].x -= magnitude * ux;
+        forces[i].y -= magnitude * uy;
+        forces[i].z -= magnitude * uz;
+        forces[j].x += magnitude * ux;
+        forces[j].y += magnitude * uy;
+        forces[j].z += magnitude * uz;
+      }
+    }
+
+    points.forEach((point, index) => {
+      let moveX = forces[index].x * stepSize;
+      let moveY = forces[index].y * stepSize;
+      let moveZ = forces[index].z * stepSize;
+      const moveLength = Math.hypot(moveX, moveY, moveZ);
+      if (moveLength > maxStep) {
+        const scale = maxStep / moveLength;
+        moveX *= scale;
+        moveY *= scale;
+        moveZ *= scale;
+      }
+      point.x += moveX;
+      point.y += moveY;
+      point.z += moveZ;
+    });
+  }
+
+  const centroid = points.reduce((sum, point) => ({
+    x: sum.x + point.x,
+    y: sum.y + point.y,
+    z: sum.z + point.z
+  }), { x: 0, y: 0, z: 0 });
+  centroid.x /= points.length;
+  centroid.y /= points.length;
+  centroid.z /= points.length;
+
+  return points.map((point) => ({
+    x: point.x - centroid.x,
+    y: point.y - centroid.y,
+    z: point.z - centroid.z
+  }));
+}
+
+function tryInvokeRdkitFunction(target, name, argsList) {
+  if (!target || typeof target[name] !== "function") return false;
+  for (const args of argsList) {
+    try {
+      target[name](...args);
+      return true;
+    } catch (error) {
+      // Try the next signature.
+    }
+  }
+  return false;
+}
+
+function tryRdkitNativeMinimization(mol, rdkitModule) {
+  if (!mol) return false;
+  const molAttempts = [
+    ["add_hs", [[]]],
+    ["EmbedMolecule", [[], [0], [25]]],
+    ["embed_molecule", [[], [0], [25]]],
+    ["MMFFOptimizeMolecule", [[], [150], [200]]],
+    ["UFFOptimizeMolecule", [[], [150], [200]]],
+    ["MMFFOptimizeMoleculeConfs", [[], [150], [200]]],
+    ["UFFOptimizeMoleculeConfs", [[], [150], [200]]]
+  ];
+  let didWork = false;
+  molAttempts.forEach(([name, argsList]) => {
+    if (tryInvokeRdkitFunction(mol, name, argsList)) {
+      didWork = true;
+    }
+  });
+
+  const moduleAttempts = [
+    ["EmbedMolecule", [[mol], [mol, 0], [mol, 25]]],
+    ["MMFFOptimizeMolecule", [[mol], [mol, 150], [mol, 200]]],
+    ["UFFOptimizeMolecule", [[mol], [mol, 150], [mol, 200]]],
+    ["MMFFOptimizeMoleculeConfs", [[mol], [mol, 150], [mol, 200]]],
+    ["UFFOptimizeMoleculeConfs", [[mol], [mol, 150], [mol, 200]]]
+  ];
+  moduleAttempts.forEach(([name, argsList]) => {
+    if (tryInvokeRdkitFunction(rdkitModule, name, argsList)) {
+      didWork = true;
+    }
+  });
+  return didWork;
+}
+
+function rdkitDisplayCoordinates(smiles, graph) {
+  if (!state.rdkit || !smiles) {
+    return minimizeDisplayCoordinates(graph, fallbackNoesyCoordinates(graph));
+  }
+  let mol = null;
+  try {
+    mol = state.rdkit.get_mol(smiles);
+    if (!mol) {
+      return minimizeDisplayCoordinates(graph, fallbackNoesyCoordinates(graph));
+    }
+    if (mol.get_new_coords) {
+      mol.get_new_coords();
+    }
+    const nativeMinimized = tryRdkitNativeMinimization(mol, state.rdkit);
+    const atomCount = mol.get_num_atoms ? Number(mol.get_num_atoms()) : graph.atoms.length;
+    const coords = parseMolblockAtomCoordinates(mol.get_molblock?.(), atomCount);
+    if (coords.length < graph.atoms.length) {
+      return minimizeDisplayCoordinates(graph, rdkitNoesyCoordinates(smiles, graph));
+    }
+    const allFlat = coords.every((point) => Math.abs(point.z) < 1e-4);
+    const fallback = allFlat ? fallbackNoesyCoordinates(graph) : null;
+    const lifted = allFlat
+      ? coords.map((point, index) => ({
+          x: point.x,
+          y: point.y,
+          z: fallback[index]?.z ?? 0
+        }))
+      : coords;
+    return nativeMinimized ? lifted : minimizeDisplayCoordinates(graph, lifted);
+  } catch (error) {
+    return minimizeDisplayCoordinates(graph, rdkitNoesyCoordinates(smiles, graph));
+  } finally {
+    if (mol?.delete) mol.delete();
+  }
+}
+
 function rdkitNoesyCoordinates(smiles, graph) {
   if (!state.rdkit || !smiles) {
     return fallbackNoesyCoordinates(graph);
@@ -1722,7 +1913,7 @@ function tryRender3d(smiles) {
     });
   }
   const viewer = state.viewer3d;
-  const coordinates = rdkitNoesyCoordinates(smiles, state.graph);
+  const coordinates = rdkitDisplayCoordinates(smiles, state.graph);
   const molblock = graphToMolblock(state.graph, coordinates);
   const xyz = graphToXyz(state.graph, coordinates);
   const candidates = [
