@@ -50,6 +50,8 @@ const state = {
   graph: null,
   lastSmiles: "",
   predictionRunId: 0,
+  cactus3d: null,
+  cactusCache: new Map(),
   predictions: { proton: [], carbon: [], hsqc: [], cosy: [], noesy: [] },
   defaultDomains: {
     proton: { min: 0, max: 12 },
@@ -1371,6 +1373,34 @@ function parseMolblockAtomCoordinates(molblock, atomCount) {
   }).filter(Boolean);
 }
 
+function parseMolblockAtoms(molblock, atomCount = molblockAtomCount(molblock)) {
+  if (!molblock || !Number.isFinite(atomCount) || atomCount <= 0) return [];
+  const lines = String(molblock).split(/\r?\n/);
+  if (lines.length < 4 + atomCount) return [];
+  return lines.slice(4, 4 + atomCount).map((line) => {
+    const x = Number(line.slice(0, 10).trim());
+    const y = Number(line.slice(10, 20).trim());
+    const z = Number(line.slice(20, 30).trim());
+    const element = line.slice(31, 34).trim() || "C";
+    if (![x, y, z].every(Number.isFinite)) return null;
+    return { element, x, y, z };
+  }).filter(Boolean);
+}
+
+function heavyAtomCoordinatesFromMolblock(molblock, graph) {
+  const atomCount = molblockAtomCount(molblock);
+  const molAtoms = parseMolblockAtoms(molblock, atomCount);
+  const heavyAtoms = molAtoms.filter((atom) => atom.element !== "H");
+  if (heavyAtoms.length < graph.atoms.length) return [];
+  const graphElements = graph.atoms.map((atom) => atom.element);
+  const sdfElements = heavyAtoms.slice(0, graph.atoms.length).map((atom) => atom.element);
+  const sameElementOrder = graphElements.every((element, index) => element === sdfElements[index]);
+  if (!sameElementOrder) {
+    return [];
+  }
+  return heavyAtoms.slice(0, graph.atoms.length).map(({ x, y, z }) => ({ x, y, z }));
+}
+
 function molblockAtomCount(molblock) {
   const lines = String(molblock || "").split(/\r?\n/);
   if (lines.length < 4) return 0;
@@ -1600,6 +1630,49 @@ function tryRdkitNativeMinimization(mol, rdkitModule) {
   return didWork;
 }
 
+function cactus3dUrl(smiles) {
+  return `https://cactus.nci.nih.gov/chemical/structure/${encodeURIComponent(smiles)}/file?format=sdf&get3d=true`;
+}
+
+async function fetchCactus3DSdf(smiles) {
+  const key = String(smiles || "").trim();
+  if (!key || typeof fetch !== "function") return null;
+  if (state.cactusCache.has(key)) {
+    return state.cactusCache.get(key);
+  }
+  const request = fetch(cactus3dUrl(key), {
+    headers: {
+      Accept: "chemical/x-mdl-sdfile, text/plain;q=0.9, */*;q=0.1"
+    }
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new Error(`CACTUS 3D request failed (${response.status}).`);
+      }
+      const sdf = await response.text();
+      if (!sdf || !sdf.includes("M  END") || molblockAtomCount(sdf) <= 0) {
+        throw new Error("CACTUS returned an invalid 3D SDF.");
+      }
+      return sdf;
+    })
+    .catch(() => null);
+  state.cactusCache.set(key, request);
+  return request;
+}
+
+async function resolveCactus3d(smiles, graph) {
+  const sdf = await fetchCactus3DSdf(smiles);
+  if (!sdf) {
+    return { sdf: null, coordinates: [], source: "fallback" };
+  }
+  const coordinates = heavyAtomCoordinatesFromMolblock(sdf, graph);
+  return {
+    sdf,
+    coordinates,
+    source: coordinates.length >= graph.atoms.length ? "cactus" : "cactus-viewer-only"
+  };
+}
+
 function rdkitDisplayCoordinates(smiles, graph) {
   if (!state.rdkit || !smiles) {
     return minimizeDisplayCoordinates(graph, fallbackNoesyCoordinates(graph));
@@ -1769,9 +1842,11 @@ function noesyVolume(distance) {
   return 1 / (safeDistance ** 6);
 }
 
-function predictNoesy(graph, protonSignals, smiles = "") {
+function predictNoesy(graph, protonSignals, smiles = "", atomCoordinatesOverride = null) {
   const peaks = [];
-  const atomCoordinates = rdkitNoesyCoordinates(smiles, graph);
+  const atomCoordinates = Array.isArray(atomCoordinatesOverride) && atomCoordinatesOverride.length >= graph.atoms.length
+    ? atomCoordinatesOverride
+    : rdkitNoesyCoordinates(smiles, graph);
   const activeSignals = protonSignals
     .filter((signal) => signal.nucleus === "1H")
     .filter((signal) => {
@@ -2046,11 +2121,18 @@ function tryRender3d(smiles) {
     });
   }
   const viewer = state.viewer3d;
+  const cactusSdf = state.cactus3d?.sdf || null;
   const rdkitMolblock = rdkitDisplayMolblock(smiles, state.graph);
-  const coordinates = minimizeDisplayCoordinates(state.graph, seedOutOfPlaneCoordinates(state.graph, rdkitNoesyCoordinates(smiles, state.graph)));
+  const coordinateSource = state.cactus3d?.coordinates?.length >= state.graph.atoms.length
+    ? state.cactus3d.coordinates
+    : rdkitNoesyCoordinates(smiles, state.graph);
+  const coordinates = minimizeDisplayCoordinates(state.graph, seedOutOfPlaneCoordinates(state.graph, coordinateSource));
   const molblock = graphToMolblock(state.graph, coordinates);
   const xyz = graphToXyz(state.graph, coordinates);
   const candidates = [];
+  if (cactusSdf) {
+    candidates.push({ data: cactusSdf, format: "sdf" });
+  }
   if (rdkitMolblock) {
     candidates.push({ data: rdkitMolblock, format: "mol" });
     candidates.push({ data: `${rdkitMolblock}\n$$$$`, format: "sdf" });
@@ -2597,6 +2679,32 @@ function renderAssignments() {
   });
 }
 
+function csvEscape(value) {
+  return `"${String(value ?? "").replace(/"/g, '""')}"`;
+}
+
+function spectrumProfileRows(environments, type, sampleCount = null) {
+  const domain = state.viewDomains[type] || state.defaultDomains[type];
+  const peaks = expandPeaks(environments, type);
+  const fwhm = type === "carbon" ? 0.55 : 0.0045;
+  const points = sampleCount || (type === "carbon" ? 1600 : 9000);
+  const rows = [];
+  for (let index = 0; index < points; index += 1) {
+    const ppm = domain.min + ((domain.max - domain.min) * index) / (points - 1);
+    const intensity = peaks.reduce((sum, peak) => {
+      const peakFwhm = peak.fwhm || fwhm;
+      return sum + gaussianAreaHeight(peak.intensity, peakFwhm) * gaussian(ppm, peak.ppm, peakFwhm);
+    }, 0);
+    rows.push({ ppm, intensity });
+  }
+  const maxIntensity = rows.reduce((max, row) => Math.max(max, row.intensity), 0) || 1;
+  return rows.map((row) => ({
+    ppm: row.ppm,
+    intensity: row.intensity,
+    relativeIntensity: (row.intensity / maxIntensity) * 100
+  }));
+}
+
 function exportActiveSpectrumCsv() {
   const type = state.activeSpectrum;
   if (type === "hsqc" || type === "cosy" || type === "noesy") {
@@ -2609,26 +2717,45 @@ function exportActiveSpectrumCsv() {
     return;
   }
   const peaks = expandPeaks(environments, type).sort((a, b) => b.ppm - a.ppm);
+  const profileRows = spectrumProfileRows(environments, type);
   const lines = [
-    "nucleus,signal_id,ppm,relative_intensity,multiplicity,atom_ids,label"
+    "section,nucleus,signal_id,ppm,intensity,relative_intensity,multiplicity,atom_ids,label"
   ];
+  profileRows
+    .slice()
+    .sort((a, b) => b.ppm - a.ppm)
+    .forEach((row) => {
+      lines.push([
+        "profile",
+        type === "carbon" ? "13C" : "1H",
+        "",
+        row.ppm.toFixed(5),
+        row.intensity.toFixed(8),
+        row.relativeIntensity.toFixed(6),
+        "",
+        "",
+        ""
+      ].join(","));
+    });
   peaks.forEach((peak) => {
     const env = peak.env;
     lines.push([
+      "stick",
       env.nucleus,
       env.signalId,
       peak.ppm.toFixed(5),
       peak.intensity.toFixed(6),
+      "",
       env.multiplicity,
-      `"${env.atomIds.join(" ")}"`,
-      `"${String(env.label || "").replace(/"/g, '""')}"`
+      csvEscape(env.atomIds.join(" ")),
+      csvEscape(env.label || "")
     ].join(","));
   });
   const smilesTag = sanitizeFilename(NMRP.smiles.value.trim() || "molecule");
   const nucleusTag = type === "carbon" ? "13C" : "1H";
   const filename = `${smilesTag}-${nucleusTag}-spectrum.csv`;
   downloadTextCsv(lines.join("\n"), filename);
-  setPredictorStatus(`Downloaded ${peaks.length} ${nucleusTag} peaks to ${filename}.`);
+  setPredictorStatus(`Downloaded ${profileRows.length} profile points and ${peaks.length} ${nucleusTag} sticks to ${filename}.`);
 }
 
 function export2DCsv(type, peaks) {
@@ -2860,7 +2987,7 @@ function selectSignals(signalIds) {
   renderActiveSpectrum();
 }
 
-function predictNmr() {
+async function predictNmr() {
   const smiles = NMRP.smiles.value.trim();
   if (!smiles) {
     setPredictorStatus("Enter a SMILES string.", true);
@@ -2872,13 +2999,19 @@ function predictNmr() {
     const predictions1d = predictEnvironments(graph);
     const hsqc = predictHsqc(graph, predictions1d.proton, predictions1d.carbon);
     const cosy = predictCosy(graph, predictions1d.proton);
-    const noesy = predictNoesy(graph, predictions1d.proton, smiles);
+    setPredictorStatus("Predicting NMR and requesting CACTUS 3D coordinates for NOESY...");
+    const cactus3d = await resolveCactus3d(smiles, graph);
+    if (runId !== state.predictionRunId) {
+      return;
+    }
+    const noesy = predictNoesy(graph, predictions1d.proton, smiles, cactus3d.coordinates);
     const predictions = { ...predictions1d, hsqc, cosy, noesy };
     if (runId !== state.predictionRunId) {
       return;
     }
     const shouldResetView = smiles !== state.lastSmiles;
     state.graph = graph;
+    state.cactus3d = cactus3d;
     state.predictions = predictions;
     state.selectedSignalId = null;
     state.selectedSignalIds = [];
@@ -2903,7 +3036,12 @@ function predictNmr() {
     tryRender3d(smiles);
     renderAssignments();
     renderActiveSpectrum();
-    setPredictorStatus(`Predicted 1H:${predictions.proton.length} 13C:${predictions.carbon.length} HSQC:${predictions.hsqc.length} COSY:${predictions.cosy.length} NOESY:${predictions.noesy.length} from teaching rules.`);
+    const noesySource = cactus3d.source === "cactus"
+      ? "CACTUS 3D distances"
+      : cactus3d.source === "cactus-viewer-only"
+        ? "CACTUS viewer SDF; fallback NOESY atom mapping"
+        : "fallback NOESY geometry";
+    setPredictorStatus(`Predicted 1H:${predictions.proton.length} 13C:${predictions.carbon.length} HSQC:${predictions.hsqc.length} COSY:${predictions.cosy.length} NOESY:${predictions.noesy.length} using ${noesySource}.`);
   } catch (error) {
     setPredictorStatus(error.message || "Could not predict this structure.", true);
   }
