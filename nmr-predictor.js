@@ -480,6 +480,76 @@ function isBetaToEsterOAlkylCarbon(graph, atom) {
     && neighbors(graph, atom).some(({ atom: n }) => isEsterOAlkylCarbon(graph, n));
 }
 
+function isAlcoholOxygen(graph, atom) {
+  return atom.element === "O" && atom.hydrogens > 0
+    && neighbors(graph, atom).some(({ atom: n, bond }) => bond.order === 1 && n.element === "C" && !isCarbonylCarbon(graph, n));
+}
+
+function alcoholBearingCarbon(graph, atom) {
+  return atom.element === "C" && !atom.aromatic && !isCarbonylCarbon(graph, atom)
+    && neighbors(graph, atom).some(({ atom: n, bond }) => bond.order === 1 && isAlcoholOxygen(graph, n));
+}
+
+function attachedAlcoholCarbon(graph, atom) {
+  if (!isAlcoholOxygen(graph, atom)) return null;
+  return neighbors(graph, atom).find(({ atom: n, bond }) => bond.order === 1 && n.element === "C")?.atom || null;
+}
+
+function aldehydeCarbonyls(graph) {
+  return graph.atoms.filter((atom) => isCarbonylCarbon(graph, atom) && atom.hydrogens > 0);
+}
+
+function nearestAldehydeDistance(graph, atom) {
+  const aldehydes = aldehydeCarbonyls(graph);
+  if (!aldehydes.length) return Infinity;
+  const distances = shortestPathDistances(graph, atom.id);
+  return Math.min(...aldehydes.map((aldehyde) => distances[aldehyde.id]));
+}
+
+function isPolyhydroxyContext(graph, atom) {
+  const target = atom.element === "O" ? attachedAlcoholCarbon(graph, atom) : atom;
+  if (!target || !alcoholBearingCarbon(graph, target)) return false;
+  const distances = shortestPathDistances(graph, target.id);
+  const localAlcoholCarbons = graph.atoms.filter((entry) => alcoholBearingCarbon(graph, entry) && distances[entry.id] <= 4).length;
+  return localAlcoholCarbons >= 2 || nearestAldehydeDistance(graph, target) <= 4;
+}
+
+function polyhydroxyAlcoholOxygenShift(graph, atom) {
+  if (!isAlcoholOxygen(graph, atom) || !isPolyhydroxyContext(graph, atom)) return null;
+  const carbon = attachedAlcoholCarbon(graph, atom);
+  const distanceToAldehyde = nearestAldehydeDistance(graph, carbon);
+  if (carbon?.hydrogens >= 2) {
+    return { ppm: 3.95, label: "polyhydroxy primary alcohol OH; exchangeable and broad", broad: true };
+  }
+  if (distanceToAldehyde === 1) return { ppm: 5.15, label: "polyhydroxy OH alpha to aldehyde; exchangeable and broad", broad: true };
+  if (distanceToAldehyde === 2) return { ppm: 4.40, label: "polyhydroxy secondary alcohol OH; exchangeable and broad", broad: true };
+  if (distanceToAldehyde === 3) return { ppm: 4.50, label: "polyhydroxy secondary alcohol OH; exchangeable and broad", broad: true };
+  if (distanceToAldehyde === 4) return { ppm: 4.40, label: "polyhydroxy secondary alcohol OH; exchangeable and broad", broad: true };
+  return { ppm: 4.50, label: "polyhydroxy alcohol OH; exchangeable and broad", broad: true };
+}
+
+function polyhydroxyCarbonProtonShift(graph, atom) {
+  if (!atom || atom.element !== "C" || atom.hydrogens <= 0 || !isPolyhydroxyContext(graph, atom)) return null;
+  const distanceToAldehyde = nearestAldehydeDistance(graph, atom);
+  if (atom.hydrogens >= 2) return { ppm: 3.56, label: "polyhydroxy CH2OH C-H" };
+  if (distanceToAldehyde === 1) return { ppm: 4.36, label: "polyhydroxy C-H alpha to aldehyde and O" };
+  if (distanceToAldehyde === 2) return { ppm: 3.72, label: "polyhydroxy C-H beta to aldehyde" };
+  if (distanceToAldehyde === 3) return { ppm: 3.40, label: "polyhydroxy C-H in oxygenated chain" };
+  if (distanceToAldehyde === 4) return { ppm: 3.50, label: "polyhydroxy C-H in oxygenated chain" };
+  return { ppm: 3.55, label: "polyhydroxy C-H on C-O carbon" };
+}
+
+function polyhydroxyCarbonShift(graph, atom) {
+  if (!atom || atom.element !== "C" || !isPolyhydroxyContext(graph, atom)) return null;
+  const distanceToAldehyde = nearestAldehydeDistance(graph, atom);
+  if (atom.hydrogens >= 2) return { ppm: 62, label: "polyhydroxy CH2OH carbon base range 50-75" };
+  if (distanceToAldehyde === 1) return { ppm: 72, label: "polyhydroxy C-O carbon alpha to aldehyde" };
+  if (distanceToAldehyde === 2) return { ppm: 73, label: "polyhydroxy C-O carbon" };
+  if (distanceToAldehyde === 3) return { ppm: 72, label: "polyhydroxy C-O carbon" };
+  if (distanceToAldehyde === 4) return { ppm: 71, label: "polyhydroxy C-O carbon" };
+  return { ppm: 70, label: "polyhydroxy C-O carbon base range 50-80" };
+}
+
 function isAlphaToCarbonylCarbon(graph, atom) {
   return atom.element === "C" && !atom.aromatic && !isCarbonylCarbon(graph, atom)
     && neighbors(graph, atom).some(({ atom: n }) => isCarbonylCarbon(graph, n));
@@ -649,6 +719,7 @@ function estimateJHz(graph, atom, neighbour, bond) {
     return alkeneCouplingJHz(graph, bond);
   }
   if (bond.order !== 1) return 0;
+  if (isCarbonylCarbon(graph, atom) || isCarbonylCarbon(graph, neighbour)) return 6.2;
   if (atom.aromatic || neighbour.aromatic) return 7.5;
   if (isAlkeneCarbon(graph, atom) || isAlkeneCarbon(graph, neighbour)) return 7.0;
   return 7.0;
@@ -836,6 +907,8 @@ function radiusEnvironmentKey(graph, atom, radius = 3) {
 function baseProtonShift(graph, atom) {
   const solventCaveat = "position solvent-dependent; may not appear";
   if (atom.element === "O") {
+    const polyhydroxyOh = polyhydroxyAlcoholOxygenShift(graph, atom);
+    if (polyhydroxyOh) return { ...polyhydroxyOh, label: `${polyhydroxyOh.label}; ${solventCaveat}` };
     if (neighbors(graph, atom).some(({ atom: n }) => isCarboxylCarbon(graph, n))) {
       return { ppm: 11.0, label: `acid OH base range 10-13; ${solventCaveat}`, broad: true };
     }
@@ -858,7 +931,10 @@ function baseProtonShift(graph, atom) {
   if (cyclopentadienePosition) {
     return { ppm: cyclopentadienePosition === "inner" ? 6.50 : 6.40, label: "cyclopentadiene vinylic CH" };
   }
-  if (isCarbonylCarbon(graph, atom) && atom.hydrogens > 0) return { ppm: 9.6, label: "aldehyde C-H base range 9.0-10.2" };
+  if (isCarbonylCarbon(graph, atom) && atom.hydrogens > 0) {
+    const oxygenatedNeighbour = neighbors(graph, atom).some(({ atom: n }) => alcoholBearingCarbon(graph, n));
+    return { ppm: oxygenatedNeighbour ? 9.72 : 9.6, label: "aldehyde C-H base range 9.0-10.2" };
+  }
   if (atom.aromatic) return { ppm: 7.25, label: "aromatic C-H base range 6.5-8.0" };
   if (isAlkeneCarbon(graph, atom)) return { ppm: 5.45, label: "vinylic C-H base range 4.5-6.5" };
   if (isAlkyneCarbon(graph, atom)) return { ppm: 2.35, label: "alkynyl C-H" };
@@ -876,6 +952,8 @@ function baseProtonShift(graph, atom) {
   if (isBetaToEsterOAlkylCarbon(graph, atom)) {
     return { ppm: 1.26, label: "ethyl ester terminal methyl C-H base range" };
   }
+  const polyhydroxyCh = polyhydroxyCarbonProtonShift(graph, atom);
+  if (polyhydroxyCh) return polyhydroxyCh;
   if (neighbors(graph, atom).some(({ bond }) => bond.order === 2)) return { ppm: 2.05, label: "allylic C-H base range 1.8-3.0" };
   const halide = dominantHalideRule(graph, atom);
   if (halide) {
@@ -935,6 +1013,8 @@ function baseCarbonShift(graph, atom) {
   if (isBetaToEsterOAlkylCarbon(graph, atom)) {
     return { ppm: 14.1, label: "ethyl ester terminal methyl carbon base range" };
   }
+  const polyhydroxyCarbon = polyhydroxyCarbonShift(graph, atom);
+  if (polyhydroxyCarbon) return polyhydroxyCarbon;
   if (isAcetalLikeCarbon(graph, atom)) {
     return { ppm: 100, label: "acetal/anomeric-type carbon base range 90-110" };
   }
@@ -962,6 +1042,13 @@ function correctionForAtom(graph, atom, nucleus, context) {
   if (nucleus === "1H" && (isCyclopentadieneMethylene(graph, atom) || isCyclopentadieneVinylic(graph, atom))) {
     return { ppm: 0, labels: [] };
   }
+  if (nucleus === "1H" && (
+    polyhydroxyAlcoholOxygenShift(graph, atom)
+    || polyhydroxyCarbonProtonShift(graph, atom)
+    || (isCarbonylCarbon(graph, atom) && atom.hydrogens > 0 && neighbors(graph, atom).some(({ atom: n }) => alcoholBearingCarbon(graph, n)))
+  )) {
+    return { ppm: 0, labels: [] };
+  }
   if (nucleus === "1H" && (isEsterOAlkylCarbon(graph, atom) || isAcylMethylCarbon(graph, atom) || isBetaToEsterOAlkylCarbon(graph, atom))) {
     return { ppm: 0, labels: [] };
   }
@@ -973,6 +1060,9 @@ function correctionForAtom(graph, atom, nucleus, context) {
     || isNitrileCarbon(graph, atom)
     || isAcetalLikeCarbon(graph, atom)
   )) {
+    return { ppm: 0, labels: [] };
+  }
+  if (nucleus === "13C" && polyhydroxyCarbonShift(graph, atom)) {
     return { ppm: 0, labels: [] };
   }
   if (nucleus === "13C" && atom.aromatic) {
