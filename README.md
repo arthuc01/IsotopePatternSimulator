@@ -1,6 +1,6 @@
 # IsotopePatternSimulator
 
-Static web app for isotopic pattern simulation from molecular formula input.
+Static spectroscopy teaching tools for GitHub Pages. The repository started as an isotope pattern simulator and now also includes NMR, Orbitrap, and TOF teaching pages.
 
 ## Features
 
@@ -10,6 +10,9 @@ Static web app for isotopic pattern simulation from molecular formula input.
 - Interactive Plotly chart for zooming, hovering, and image export
 - CSV download for centroid peaks and simulated profile data
 - GitHub Pages-friendly deployment with no backend
+- Teaching NMR predictor with SMILES/JSME input, approximate 1H/13C shifts, HSQC/COSY/NOESY views, CACTUS-backed 3D rendering, and CSV export
+- NMR predictor heuristic notes in [nmr-predictor-readme.html](./nmr-predictor-readme.html)
+- Orbitrap and TOF animation pages for mass spectrometry teaching
 
 ## Run locally
 

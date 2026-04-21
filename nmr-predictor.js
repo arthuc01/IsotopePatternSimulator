@@ -878,7 +878,7 @@ function baseCarbonShift(graph, atom) {
     if (isCarboxylCarbon(graph, atom)) {
       const aryl = neighbors(graph, atom).some(({ atom: n }) => n.aromatic);
       const ester = neighbors(graph, atom).some(({ atom: n }) => n.element === "O" && neighbors(graph, n).some(({ atom: m }) => m.element === "C" && !isCarbonylCarbon(graph, m)));
-      return { ppm: aryl ? 166 : ester ? 170 : 174, label: ester ? "ester carbonyl base range 165-175" : "carboxylic acid carbonyl base range 170-180" };
+      return { ppm: aryl ? 166 : ester ? 170 : 174, label: ester ? "ester carbonyl base range 165-175" : aryl ? "aryl carboxylic acid carbonyl calibrated near 166" : "carboxylic acid carbonyl base range 170-180" };
     }
     if (atom.hydrogens > 0) return { ppm: 198, label: "aldehyde carbonyl base range 190-205" };
     const conjugated = neighbors(graph, atom).some(({ atom: n }) => n.aromatic || isAlkeneCarbon(graph, n));
@@ -1188,6 +1188,7 @@ function aromaticCarbonSubstituentCorrection(graph, atom) {
   if (!aromaticRings.length) return { ppm: 0, labels: [] };
   let ppm = 0;
   const labels = [];
+  const seenPositions = new Set();
   const counted = new Set();
   aromaticRings.forEach((ring) => {
     ring.atoms.forEach((ringAtomId) => {
@@ -1204,10 +1205,15 @@ function aromaticCarbonSubstituentCorrection(graph, atom) {
           const effect = aromaticCarbonPositionEffects(classification.key)[step] || 0;
           if (Math.abs(effect) < 0.01) return;
           ppm += effect;
+          seenPositions.add(`${step}:${classification.key}`);
           labels.push(`${step === 0 ? "ipso" : aromaticPositionName(step)} ${classification.label}`);
         });
     });
   });
+  if (seenPositions.has("1:acyloxy") && seenPositions.has("2:carboxyl")) {
+    ppm += 2.5;
+    labels.push("salicylate ester interaction");
+  }
   return { ppm, labels };
 }
 
@@ -2972,7 +2978,7 @@ function renderActiveSpectrum() {
     } else if (type === "cosy") {
       NMRP.caption.textContent = "Teaching approximation: mainly vicinal/aromatic-neighbour couplings; weak/long-range couplings omitted.";
     } else if (type === "noesy") {
-      NMRP.caption.textContent = "Teaching approximation: RDKit-based coordinate model with peaks for proton pairs within 5 Å; volume scales roughly with 1/r^6.";
+      NMRP.caption.textContent = "Teaching approximation: CACTUS 3D coordinates where available, otherwise fallback coordinates; peaks are proton pairs within 5 A and volume scales roughly with 1/r^6.";
     } else {
       NMRP.caption.textContent = "Switch between 1D and 2D teaching spectra.";
     }
