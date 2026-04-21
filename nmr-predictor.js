@@ -2605,7 +2605,18 @@ function renderSpectrum(environments, type) {
       const min = event["xaxis.range[1]"];
       const max = event["xaxis.range[0]"];
       if (Number.isFinite(min) && Number.isFinite(max)) {
-        state.viewDomains[type] = { min: Math.min(min, max), max: Math.max(min, max) };
+        const nextDomain = { min: Math.min(min, max), max: Math.max(min, max) };
+        const currentDomain = state.viewDomains[type];
+        const changed = Math.abs(nextDomain.min - currentDomain.min) > 1e-6 || Math.abs(nextDomain.max - currentDomain.max) > 1e-6;
+        state.viewDomains[type] = nextDomain;
+        if (changed) {
+          const render = () => renderSpectrum(state.predictions[type], type);
+          if (window.requestAnimationFrame) {
+            window.requestAnimationFrame(render);
+          } else {
+            window.setTimeout(render, 0);
+          }
+        }
       }
     });
   });
