@@ -2467,7 +2467,7 @@ function renderSpectrum(environments, type) {
   const xValues = [];
   const yValues = [];
   Array.from({ length: sampleCount }, (_, index) => {
-    const ppm = domain.min + ((domain.max - domain.min) * index) / (sampleCount - 1);
+    const ppm = fullDomain.min + ((fullDomain.max - fullDomain.min) * index) / (sampleCount - 1);
     const y = peaks.reduce((sum, peak) => {
       const peakFwhm = peak.fwhm || fwhm;
       return sum + gaussianAreaHeight(peak.intensity, peakFwhm) * gaussian(ppm, peak.ppm, peakFwhm);
@@ -2475,7 +2475,10 @@ function renderSpectrum(environments, type) {
     xValues.push(ppm);
     yValues.push(y);
   });
-  const maxY = yValues.reduce((max, y) => Math.max(max, y), 0) || 1;
+  const maxY = yValues.reduce((max, y, index) => {
+    const ppm = xValues[index];
+    return ppm >= domain.min && ppm <= domain.max ? Math.max(max, y) : max;
+  }, 0) || yValues.reduce((max, y) => Math.max(max, y), 0) || 1;
   const maxPeak = Math.max(...peaks.map((peak) => peak.intensity), 1);
   const visiblePeaks = peaks.filter((peak) => peak.ppm >= domain.min && peak.ppm <= domain.max);
   const profileHeightAt = (ppm) => {
