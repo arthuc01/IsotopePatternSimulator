@@ -421,6 +421,10 @@ function isCarboxylCarbon(graph, atom) {
   return neighbors(graph, atom).some(({ atom: n, bond }) => bond.order === 1 && n.element === "O");
 }
 
+function isAmideCarbonylCarbon(graph, atom) {
+  return isCarbonylCarbon(graph, atom) && neighbors(graph, atom).some(({ atom: n, bond }) => bond.order === 1 && n.element === "N");
+}
+
 function isAttachedToCarbonyl(graph, atom) {
   return neighbors(graph, atom).some(({ atom: n }) => isCarbonylCarbon(graph, n));
 }
@@ -433,8 +437,45 @@ function isAlkyneCarbon(graph, atom) {
   return atom.element === "C" && atom.bonds.some((bond) => bond.order === 3 && otherAtom(graph, bond, atom.id).element === "C");
 }
 
+function isNitrileCarbon(graph, atom) {
+  return atom.element === "C" && hasBondTo(graph, atom, "N", 3);
+}
+
 function isAcyloxyOxygen(graph, atom) {
   return atom.element === "O" && neighbors(graph, atom).some(({ atom: n }) => isCarbonylCarbon(graph, n));
+}
+
+function isEsterOAlkylCarbon(graph, atom) {
+  return atom.element === "C" && !atom.aromatic && neighbors(graph, atom).some(({ atom: n }) => isAcyloxyOxygen(graph, n));
+}
+
+function isAcylMethylCarbon(graph, atom) {
+  return atom.element === "C" && atom.hydrogens === 3 && neighbors(graph, atom).some(({ atom: n }) => isCarbonylCarbon(graph, n));
+}
+
+function isBetaToEsterOAlkylCarbon(graph, atom) {
+  return atom.element === "C" && atom.hydrogens === 3 && !isAcylMethylCarbon(graph, atom)
+    && neighbors(graph, atom).some(({ atom: n }) => isEsterOAlkylCarbon(graph, n));
+}
+
+function isAlphaToCarbonylCarbon(graph, atom) {
+  return atom.element === "C" && !atom.aromatic && !isCarbonylCarbon(graph, atom)
+    && neighbors(graph, atom).some(({ atom: n }) => isCarbonylCarbon(graph, n));
+}
+
+function isBetaToCarbonylCarbon(graph, atom) {
+  return atom.element === "C" && !atom.aromatic && !isCarbonylCarbon(graph, atom)
+    && neighbors(graph, atom).some(({ atom: n }) => isAlphaToCarbonylCarbon(graph, n));
+}
+
+function isAllylicCarbon(graph, atom) {
+  return atom.element === "C" && !atom.aromatic && !isAlkeneCarbon(graph, atom)
+    && neighbors(graph, atom).some(({ atom: n, bond }) => bond.order === 1 && isAlkeneCarbon(graph, n));
+}
+
+function isAcetalLikeCarbon(graph, atom) {
+  return atom.element === "C" && !atom.aromatic && !isCarbonylCarbon(graph, atom)
+    && neighbors(graph, atom).filter(({ atom: n }) => ["O", "N", "S"].includes(n.element)).length >= 2;
 }
 
 function isAmideNitrogen(graph, atom) {
@@ -803,6 +844,16 @@ function baseProtonShift(graph, atom) {
     const ppm = atom.hydrogens >= 3 ? 2.30 : atom.hydrogens === 2 ? 2.65 : 2.80;
     return { ppm, label: "benzylic C-H base range 1.8-3.0" };
   }
+  if (isEsterOAlkylCarbon(graph, atom)) {
+    const ppm = atom.hydrogens >= 3 ? 3.89 : 4.12;
+    return { ppm, label: "alkoxy ester C-H base range" };
+  }
+  if (isAcylMethylCarbon(graph, atom)) {
+    return { ppm: 2.04, label: "acetyl methyl C-H base range" };
+  }
+  if (isBetaToEsterOAlkylCarbon(graph, atom)) {
+    return { ppm: 1.26, label: "ethyl ester terminal methyl C-H base range" };
+  }
   if (neighbors(graph, atom).some(({ bond }) => bond.order === 2)) return { ppm: 2.05, label: "allylic C-H base range 1.8-3.0" };
   const halide = dominantHalideRule(graph, atom);
   if (halide) {
@@ -823,18 +874,27 @@ function baseProtonShift(graph, atom) {
 
 function baseCarbonShift(graph, atom) {
   if (isCarbonylCarbon(graph, atom)) {
-    if (isCarboxylCarbon(graph, atom)) return { ppm: 172, label: "carboxyl/ester carbonyl base range 160-220" };
-    if (atom.hydrogens > 0) return { ppm: 198, label: "aldehyde carbonyl base range 160-220" };
-    return { ppm: 205, label: "ketone carbonyl base range 160-220" };
+    if (isAmideCarbonylCarbon(graph, atom)) return { ppm: 170, label: "amide carbonyl base range 165-180" };
+    if (isCarboxylCarbon(graph, atom)) {
+      const aryl = neighbors(graph, atom).some(({ atom: n }) => n.aromatic);
+      const ester = neighbors(graph, atom).some(({ atom: n }) => n.element === "O" && neighbors(graph, n).some(({ atom: m }) => m.element === "C" && !isCarbonylCarbon(graph, m)));
+      return { ppm: aryl ? 166 : ester ? 170 : 174, label: ester ? "ester carbonyl base range 165-175" : "carboxylic acid carbonyl base range 170-180" };
+    }
+    if (atom.hydrogens > 0) return { ppm: 198, label: "aldehyde carbonyl base range 190-205" };
+    const conjugated = neighbors(graph, atom).some(({ atom: n }) => n.aromatic || isAlkeneCarbon(graph, n));
+    return { ppm: conjugated ? 195 : 210, label: conjugated ? "conjugated ketone carbonyl base range 185-205" : "ketone carbonyl base range 205-220" };
   }
   if (atom.aromatic) return { ppm: 128, label: "aromatic sp2 base range 120-145" };
+  if (isNitrileCarbon(graph, atom)) return { ppm: 118, label: "nitrile carbon base range 110-125" };
   if (isAlkeneCarbon(graph, atom)) {
     const conjugated = neighbors(graph, atom).some(({ atom: n }) => n.aromatic || isCarbonylCarbon(graph, n));
+    const attachedToO = neighbors(graph, atom).some(({ atom: n }) => n.element === "O");
+    if (attachedToO) return { ppm: 150, label: "C=C attached to O base range 140-165" };
     if (atom.hydrogens >= 2) return { ppm: conjugated ? 118 : 112, label: "terminal alkene CH2 carbon base range 110-118" };
     if (atom.hydrogens === 1) return { ppm: conjugated ? 136 : 126, label: "internal alkene CH carbon base range 120-138" };
     return { ppm: conjugated ? 140 : 132, label: "substituted alkene quaternary carbon base range 125-145" };
   }
-  if (isAlkyneCarbon(graph, atom)) return { ppm: 78, label: "alkyne carbon" };
+  if (isAlkyneCarbon(graph, atom)) return { ppm: atom.hydrogens > 0 ? 70 : 80, label: atom.hydrogens > 0 ? "terminal alkyne C-H carbon base range 65-75" : "internal alkyne carbon base range 70-90" };
   const halide = dominantHalideRule(graph, atom);
   if (halide) {
     const halogenCount = bondedHalogens(graph, atom).length;
@@ -844,9 +904,33 @@ function baseCarbonShift(graph, atom) {
       label: `C attached to ${halide.element}${halogenCount > 1 ? " (multiple halides)" : ""} base range typical for alkyl halides`
     };
   }
+  if (isEsterOAlkylCarbon(graph, atom)) {
+    return { ppm: atom.hydrogens >= 3 ? 51.5 : 61.0, label: "alkoxy ester carbon base range" };
+  }
+  if (isAcylMethylCarbon(graph, atom)) {
+    return { ppm: 20.7, label: "acetyl methyl carbon base range" };
+  }
+  if (isBetaToEsterOAlkylCarbon(graph, atom)) {
+    return { ppm: 14.1, label: "ethyl ester terminal methyl carbon base range" };
+  }
+  if (isAcetalLikeCarbon(graph, atom)) {
+    return { ppm: 100, label: "acetal/anomeric-type carbon base range 90-110" };
+  }
   const heteroShift = carbonAlphaHeteroShiftC(graph, atom);
   if (heteroShift) {
     return { ppm: heteroShift.ppm, label: `${heteroShift.label} base range` };
+  }
+  if (isBenzylicCarbon(graph, atom)) {
+    return { ppm: atom.hydrogens >= 3 ? 21 : atom.hydrogens === 2 ? 35 : 42, label: "benzylic sp3 carbon base range 20-50" };
+  }
+  if (isAllylicCarbon(graph, atom)) {
+    return { ppm: atom.hydrogens >= 3 ? 18 : atom.hydrogens === 2 ? 30 : 38, label: "allylic carbon base range 15-40" };
+  }
+  if (isAlphaToCarbonylCarbon(graph, atom)) {
+    return { ppm: atom.hydrogens >= 3 ? 28 : atom.hydrogens === 2 ? 38 : 45, label: "alpha to carbonyl carbon base range 20-50" };
+  }
+  if (isBetaToCarbonylCarbon(graph, atom)) {
+    return { ppm: atom.hydrogens >= 3 ? 22 : atom.hydrogens === 2 ? 30 : 36, label: "beta to carbonyl carbon base range 20-40" };
   }
   const degree = carbonDegree(graph, atom);
   return { ppm: degree <= 1 ? 14 : degree === 2 ? 25 : degree === 3 ? 35 : 40, label: "alkyl sp3 base range 10-40" };
@@ -855,6 +939,22 @@ function baseCarbonShift(graph, atom) {
 function correctionForAtom(graph, atom, nucleus, context) {
   if (nucleus === "1H" && (isCyclopentadieneMethylene(graph, atom) || isCyclopentadieneVinylic(graph, atom))) {
     return { ppm: 0, labels: [] };
+  }
+  if (nucleus === "1H" && (isEsterOAlkylCarbon(graph, atom) || isAcylMethylCarbon(graph, atom) || isBetaToEsterOAlkylCarbon(graph, atom))) {
+    return { ppm: 0, labels: [] };
+  }
+  if (nucleus === "13C" && (
+    isCarboxylCarbon(graph, atom)
+    || isEsterOAlkylCarbon(graph, atom)
+    || isAcylMethylCarbon(graph, atom)
+    || isBetaToEsterOAlkylCarbon(graph, atom)
+    || isNitrileCarbon(graph, atom)
+    || isAcetalLikeCarbon(graph, atom)
+  )) {
+    return { ppm: 0, labels: [] };
+  }
+  if (nucleus === "13C" && atom.aromatic) {
+    return aromaticCarbonSubstituentCorrection(graph, atom);
   }
   const { groups, distances, charges } = context;
   let ppm = 0;
@@ -1063,6 +1163,48 @@ function aromaticSubstituentCorrection(graph, atom, distances) {
           if (Math.abs(effect) < 0.01) return;
           ppm += effect;
           labels.push(`${position} ${classification.label}`);
+        });
+    });
+  });
+  return { ppm, labels };
+}
+
+function aromaticCarbonPositionEffects(substituentKey) {
+  const table = {
+    carboxyl: { 0: 2.1, 1: 1.9, 2: 0.6, 3: 5.0 },
+    acyl: { 0: 3.0, 1: 2.0, 2: 0.7, 3: 4.0 },
+    alkoxy: { 0: 25.0, 1: -14.0, 2: 1.5, 3: -8.0 },
+    acyloxy: { 0: 22.0, 1: -7.0, 2: 1.0, 3: -4.0 },
+    alkyl: { 0: 9.0, 1: -1.0, 2: 0.5, 3: -2.0 },
+    halogen_F: { 0: 34.0, 1: -12.0, 2: 2.0, 3: -4.0 },
+    halogen_Cl: { 0: 7.0, 1: -2.0, 2: 1.0, 3: -1.0 },
+    generic_ewg: { 0: 2.0, 1: 1.0, 2: 0.4, 3: 1.5 }
+  };
+  return table[substituentKey] || table.generic_ewg;
+}
+
+function aromaticCarbonSubstituentCorrection(graph, atom) {
+  const aromaticRings = findAromaticSixRings(graph).filter((ring) => ring.atoms.includes(atom.id));
+  if (!aromaticRings.length) return { ppm: 0, labels: [] };
+  let ppm = 0;
+  const labels = [];
+  const counted = new Set();
+  aromaticRings.forEach((ring) => {
+    ring.atoms.forEach((ringAtomId) => {
+      const ringAtom = graph.atoms[ringAtomId];
+      neighbors(graph, ringAtom)
+        .filter(({ atom: substituent }) => !substituent.aromatic)
+        .forEach(({ atom: substituent }) => {
+          const uniqueKey = `${ring.key}:${ringAtomId}:${substituent.id}`;
+          if (counted.has(uniqueKey)) return;
+          counted.add(uniqueKey);
+          const step = ringAtomId === atom.id ? 0 : aromaticPositionStep(ring.atoms, atom.id, ringAtomId);
+          if (![0, 1, 2, 3].includes(step)) return;
+          const classification = classifyArylSubstituent(graph, substituent);
+          const effect = aromaticCarbonPositionEffects(classification.key)[step] || 0;
+          if (Math.abs(effect) < 0.01) return;
+          ppm += effect;
+          labels.push(`${step === 0 ? "ipso" : aromaticPositionName(step)} ${classification.label}`);
         });
     });
   });
