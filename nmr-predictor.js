@@ -1371,6 +1371,34 @@ function parseMolblockAtomCoordinates(molblock, atomCount) {
   }).filter(Boolean);
 }
 
+function molblockAtomCount(molblock) {
+  const lines = String(molblock || "").split(/\r?\n/);
+  if (lines.length < 4) return 0;
+  const count = Number.parseInt(lines[3].slice(0, 3).trim(), 10);
+  return Number.isFinite(count) ? count : 0;
+}
+
+function withMolblockCoordinates(molblock, coordinates, atomCount) {
+  if (!molblock || !Array.isArray(coordinates) || !Number.isFinite(atomCount) || atomCount <= 0) {
+    return molblock;
+  }
+  const lines = String(molblock).split(/\r?\n/);
+  if (lines.length < 4 + atomCount) {
+    return molblock;
+  }
+  for (let i = 0; i < atomCount; i += 1) {
+    const point = coordinates[i];
+    if (!point || ![point.x, point.y, point.z].every(Number.isFinite)) {
+      continue;
+    }
+    const original = lines[4 + i] || "";
+    const tail = original.length > 30 ? original.slice(30) : " C   0  0  0  0  0  0  0  0  0  0  0  0";
+    const xyz = `${point.x.toFixed(4).padStart(10)}${point.y.toFixed(4).padStart(10)}${point.z.toFixed(4).padStart(10)}`;
+    lines[4 + i] = `${xyz}${tail}`;
+  }
+  return lines.join("\n");
+}
+
 function fallbackNoesyCoordinates(graph) {
   const coords = [];
   graph.atoms.forEach((atom) => {
@@ -1383,6 +1411,26 @@ function fallbackNoesyCoordinates(graph) {
     });
   });
   return coords;
+}
+
+function seedOutOfPlaneCoordinates(graph, flatCoordinates) {
+  const fallback = fallbackNoesyCoordinates(graph);
+  return flatCoordinates.map((point, index) => {
+    const atom = graph.atoms[index];
+    const neighborCount = neighbors(graph, atom).length;
+    const isLikelySp3 = atom.element === "C"
+      && !atom.aromatic
+      && !isAlkeneCarbon(graph, atom)
+      && !isAlkyneCarbon(graph, atom)
+      && neighborCount >= 3;
+    const baseZ = fallback[index]?.z ?? (((index % 3) - 1) * 0.22);
+    const zScale = isLikelySp3 ? 0.48 : 0.28;
+    return {
+      x: point.x,
+      y: point.y,
+      z: baseZ * zScale
+    };
+  });
 }
 
 function bondTargetLength(order) {
@@ -1507,6 +1555,18 @@ function tryInvokeRdkitFunction(target, name, argsList) {
   return false;
 }
 
+function tryInvokeRdkitFunctionWithResult(target, name, argsList) {
+  if (!target || typeof target[name] !== "function") return { ok: false, result: null };
+  for (const args of argsList) {
+    try {
+      return { ok: true, result: target[name](...args) };
+    } catch (error) {
+      // Try the next signature.
+    }
+  }
+  return { ok: false, result: null };
+}
+
 function tryRdkitNativeMinimization(mol, rdkitModule) {
   if (!mol) return false;
   const molAttempts = [
@@ -1573,6 +1633,79 @@ function rdkitDisplayCoordinates(smiles, graph) {
     return minimizeDisplayCoordinates(graph, rdkitNoesyCoordinates(smiles, graph));
   } finally {
     if (mol?.delete) mol.delete();
+  }
+}
+
+function rdkitDisplayMolblock(smiles, graph) {
+  if (!state.rdkit || !smiles) return null;
+  let mol = null;
+  const ownedMols = [];
+  const adoptMol = (candidate) => {
+    if (!candidate || candidate === mol || typeof candidate.get_molblock !== "function") return false;
+    mol = candidate;
+    if (!ownedMols.includes(candidate)) {
+      ownedMols.push(candidate);
+    }
+    return true;
+  };
+  try {
+    mol = state.rdkit.get_mol(smiles);
+    if (!mol) return null;
+    ownedMols.push(mol);
+
+    const addHsCalls = [
+      tryInvokeRdkitFunctionWithResult(mol, "add_hs", [[], [true], [1]]),
+      tryInvokeRdkitFunctionWithResult(mol, "AddHs", [[], [true], [1]]),
+      tryInvokeRdkitFunctionWithResult(mol, "addHs", [[], [true], [1]]),
+      tryInvokeRdkitFunctionWithResult(state.rdkit, "add_hs", [[mol], [mol, true], [mol, 1]]),
+      tryInvokeRdkitFunctionWithResult(state.rdkit, "AddHs", [[mol], [mol, true], [mol, 1]]),
+      tryInvokeRdkitFunctionWithResult(state.rdkit, "addHs", [[mol], [mol, true], [mol, 1]])
+    ];
+    addHsCalls.forEach((attempt) => {
+      if (attempt.ok) {
+        adoptMol(attempt.result);
+      }
+    });
+
+    const embedCalls = [
+      tryInvokeRdkitFunction(mol, "EmbedMolecule", [[], [0], [25], [50], [200]]),
+      tryInvokeRdkitFunction(mol, "embed_molecule", [[], [0], [25], [50], [200]]),
+      tryInvokeRdkitFunction(mol, "embedMolecule", [[], [0], [25], [50], [200]]),
+      tryInvokeRdkitFunction(state.rdkit, "EmbedMolecule", [[mol], [mol, 0], [mol, 25], [mol, 50], [mol, 200]]),
+      tryInvokeRdkitFunction(state.rdkit, "embed_molecule", [[mol], [mol, 0], [mol, 25], [mol, 50], [mol, 200]]),
+      tryInvokeRdkitFunction(state.rdkit, "embedMolecule", [[mol], [mol, 0], [mol, 25], [mol, 50], [mol, 200]])
+    ];
+    const didEmbed = embedCalls.some(Boolean);
+    if (!didEmbed && mol.get_new_coords) {
+      // Some RDKit.js builds only expose this coordinate generator.
+      mol.get_new_coords();
+    }
+
+    tryRdkitNativeMinimization(mol, state.rdkit);
+    const molblock = mol.get_molblock?.();
+    const atomCount = molblockAtomCount(molblock);
+    if (!molblock || atomCount <= 0 || atomCount < graph.atoms.length) {
+      return null;
+    }
+    const coords = parseMolblockAtomCoordinates(molblock, atomCount);
+    if (coords.length < graph.atoms.length) {
+      return molblock;
+    }
+    const allFlat = coords.slice(0, graph.atoms.length).every((point) => Math.abs(point.z) < 1e-4);
+    if (!allFlat) {
+      return molblock;
+    }
+    // If RDKit still yields flat coordinates, return null so caller can use
+    // a fallback model rather than pretending this is 3D.
+    return null;
+  } catch (error) {
+    return null;
+  } finally {
+    ownedMols.forEach((entry) => {
+      if (entry?.delete) {
+        entry.delete();
+      }
+    });
   }
 }
 
@@ -1913,14 +2046,18 @@ function tryRender3d(smiles) {
     });
   }
   const viewer = state.viewer3d;
-  const coordinates = rdkitDisplayCoordinates(smiles, state.graph);
+  const rdkitMolblock = rdkitDisplayMolblock(smiles, state.graph);
+  const coordinates = minimizeDisplayCoordinates(state.graph, seedOutOfPlaneCoordinates(state.graph, rdkitNoesyCoordinates(smiles, state.graph)));
   const molblock = graphToMolblock(state.graph, coordinates);
   const xyz = graphToXyz(state.graph, coordinates);
-  const candidates = [
-    { data: molblock, format: "mol" },
-    { data: `${molblock}\n$$$$`, format: "sdf" },
-    { data: xyz, format: "xyz" }
-  ];
+  const candidates = [];
+  if (rdkitMolblock) {
+    candidates.push({ data: rdkitMolblock, format: "mol" });
+    candidates.push({ data: `${rdkitMolblock}\n$$$$`, format: "sdf" });
+  }
+  candidates.push({ data: molblock, format: "mol" });
+  candidates.push({ data: `${molblock}\n$$$$`, format: "sdf" });
+  candidates.push({ data: xyz, format: "xyz" });
   let loaded = false;
   for (const candidate of candidates) {
     try {
